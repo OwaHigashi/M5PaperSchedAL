@@ -1,0 +1,14 @@
+{
+  "wifi_ssid": "",
+  "wifi_pass": "",
+  "ics_url": "",
+  "ics_user": "",
+  "ics_pass": "",
+  "midi_file": "/midi/alarm.mid",
+  "midi_url": "https://example.com/midi",
+  "midi_baud": 31250,
+  "alarm_offset": 10,
+  "port_select": 1,
+  "time_24h": true,
+  "text_wrap": false
+}
