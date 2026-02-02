@@ -42,6 +42,7 @@ void handleSettingsSelect();
 void handleTouch(int tx, int ty);
 void checkSwitches();
 void checkAlarms();
+void scrollToToday();
 void fetchAndUpdate();
 bool connectWiFi();
 bool startMidiPlayback(const char* filename);
@@ -54,8 +55,8 @@ void finishAlarm();
 //==============================================================================
 // ピン定義
 //==============================================================================
-#define MIDI_TX_PIN      33      // Port B TX
-#define MIDI_RX_PIN      32      // Port B RX (未使用だが定義)
+// 注意: 実際のTXピンは port_tx_pins[] 配列で管理
+// Port A=G25, Port B=G26, Port C=G18 (config.port_selectで選択)
 
 // M5Paper側面スイッチ GPIO
 #define SW_L_PIN         37      // Lスイッチ (上/戻る)
@@ -206,6 +207,9 @@ int row_y1[MAX_EVENTS];
 time_t last_fetch = 0;
 int fetch_fail_count = 0;  // ICS取得連続失敗回数
 unsigned long last_switch_check = 0;
+unsigned long last_interaction_ms = 0;  // 最後の操作時刻(millis)
+time_t last_alarm_debug = 0;            // 最後のアラームデバッグ出力時刻
+time_t last_auto_refresh = 0;           // 最後の自動表示更新時刻
 
 // MIDI再生
 SimpleMIDIPlayer midi;
@@ -237,13 +241,22 @@ void sendCC(uint8_t ch, uint8_t cc, uint8_t val) {
     Serial2.write(msg, 3);
 }
 
-// 全チャンネル停止
+// 全チャンネル停止 + GM Reset
 void stopAllNotes() {
+    // 1. 全チャンネル: All Sound Off + All Notes Off + Reset All Controllers
     for (int ch = 0; ch < 16; ch++) {
         sendCC(ch, 120, 0);  // All Sound Off
         sendCC(ch, 123, 0);  // All Notes Off
+        sendCC(ch, 121, 0);  // Reset All Controllers
     }
-    delay(10);  // メッセージ送信完了待ち
+    delay(50);
+    
+    // 2. GM System On (音源をリセット)
+    uint8_t gmReset[] = {0xF0, 0x7E, 0x7F, 0x09, 0x01, 0xF7};
+    Serial2.write(gmReset, sizeof(gmReset));
+    delay(100);
+    
+    Serial.println("MIDI: All notes off + GM Reset sent");
 }
 
 //==============================================================================
@@ -297,6 +310,12 @@ void loadConfig() {
     if (doc.containsKey("time_24h")) config.time_24h = doc["time_24h"];
     if (doc.containsKey("text_wrap")) config.text_wrap = doc["text_wrap"];
     if (doc["ics_poll_min"]) config.ics_poll_min = doc["ics_poll_min"];
+    
+    // ICS更新間隔の下限を5分に制限（メモリフラグメンテーション防止）
+    if (config.ics_poll_min < 5) {
+        Serial.printf("Config: ics_poll_min=%d is too small, setting to 5\n", config.ics_poll_min);
+        config.ics_poll_min = 5;
+    }
     if (doc.containsKey("play_duration")) config.play_duration = doc["play_duration"];
     if (doc["play_repeat"]) config.play_repeat = doc["play_repeat"];
 
@@ -728,7 +747,7 @@ void parseICS(const String& unfolded) {
             continue;
         }
         if (line == "END:VEVENT") {
-            if (inEvent && event_count < MAX_EVENTS) {
+            if (inEvent && event_count < MAX_EVENTS - 1) {  // 1枠テストアラーム用に確保
                 time_t st = 0;
                 bool is_allday = false;
                 if (parseDT(dtstart_raw, st, is_allday)) {
@@ -791,18 +810,24 @@ void parseICS(const String& unfolded) {
 
 void fetchAndUpdate() {
     Serial.printf("Fetching ICS... (heap: %d)\n", ESP.getFreeHeap());
-    String raw = httpGetICS();
-    if (!raw.length()) {
-        Serial.printf("ICS fetch failed (fail count: %d)\n", fetch_fail_count + 1);
-        // 失敗時も last_fetch を更新
-        last_fetch = time(nullptr);
-        fetch_fail_count++;
-        return;
+    
+    {
+        // ブロックスコープでraw, unfoldedを確実に解放
+        String raw = httpGetICS();
+        if (!raw.length()) {
+            Serial.printf("ICS fetch failed (fail count: %d)\n", fetch_fail_count + 1);
+            last_fetch = time(nullptr);
+            fetch_fail_count++;
+            return;
+        }
+        String unfolded = unfoldICS(raw);
+        raw = "";  // 即座に解放
+        parseICS(unfolded);
+        // unfoldedはスコープ終了で解放
     }
-    String unfolded = unfoldICS(raw);
-    parseICS(unfolded);
+    
     last_fetch = time(nullptr);
-    fetch_fail_count = 0;  // 成功したらリセット
+    fetch_fail_count = 0;
     Serial.printf("Fetched %d events (heap: %d, next fetch in %d min)\n", 
                   event_count, ESP.getFreeHeap(), config.ics_poll_min);
 }
@@ -939,6 +964,7 @@ void finishAlarm() {
     play_repeat_remaining = 0;
     play_duration_ms = 0;
     ui_state = UI_LIST;
+    scrollToToday();
     drawList();
 }
 
@@ -1047,6 +1073,28 @@ void drawHeader(const char* title) {
 int date_header_y0[10];
 int date_header_y1[10];
 int date_header_count = 0;
+
+// 今日の先頭にスクロール
+void scrollToToday() {
+    time_t now_t = time(nullptr);
+    struct tm now_tm;
+    localtime_r(&now_t, &now_tm);
+    int today = now_tm.tm_mday + now_tm.tm_mon * 100 + now_tm.tm_year * 10000;
+    
+    for (int i = 0; i < event_count; i++) {
+        struct tm t;
+        localtime_r(&events[i].start, &t);
+        int day = t.tm_mday + t.tm_mon * 100 + t.tm_year * 10000;
+        if (day >= today) {
+            page_start = i;
+            selected_event = i;
+            return;
+        }
+    }
+    // 今日以降の予定がなければ先頭
+    page_start = 0;
+    selected_event = 0;
+}
 
 void drawList() {
     canvas.fillCanvas(0);
@@ -1334,25 +1382,24 @@ void drawPlaying(int idx) {
 
     // 中央に大きく表示
     canvas.setTextSize(48);
-    canvas.drawString("ALARM!", 270, 80);
+    canvas.drawString("ALARM!", 270, 60);
 
     canvas.setTextSize(32);
     // サマリー（絵文字除去、UTF-8安全に切り取り）
     String summary = removeUnsupportedChars(e.summary);
-    // 2行に分けて表示
     String line1 = utf8Substring(summary, 30);
-    canvas.drawString(line1, 270, 170);
+    canvas.drawString(line1, 270, 140);
     if (summary.length() > line1.length()) {
         String rest = summary.substring(line1.length());
         String line2 = utf8Substring(rest, 30);
-        canvas.drawString(line2, 270, 210);
+        canvas.drawString(line2, 270, 178);
     }
 
     struct tm st;
     localtime_r(&e.start, &st);
     String timeStr = formatTime(st.tm_hour, st.tm_min);
     canvas.setTextSize(56);
-    canvas.drawString(timeStr, 270, 300);
+    canvas.drawString(timeStr, 270, 250);
 
     // 鳴動情報
     canvas.setTextSize(22);
@@ -1363,10 +1410,27 @@ void drawPlaying(int idx) {
         info += "1曲";
     }
     info += " x" + String(play_repeat_remaining) + "回";
-    canvas.drawString(info, 270, 380);
+    canvas.drawString(info, 270, 320);
 
+    // DESCRIPTION表示（左揃え、複数行）
+    canvas.setTextDatum(TL_DATUM);
+    canvas.setTextSize(24);
+    String desc = removeUnsupportedChars(e.description);
+    int y = 370;
+    int maxY = 880;
+    int lineWidth = 36;  // 表示幅（日本語18文字、ASCII36文字）
+    int lineHeight = 32;
+    while (desc.length() > 0 && y < maxY) {
+        String dline = utf8Substring(desc, lineWidth);
+        if (dline.length() == 0) break;
+        canvas.drawString(dline, 20, y);
+        desc = desc.substring(dline.length());
+        y += lineHeight;
+    }
+
+    canvas.setTextDatum(MC_DATUM);
     canvas.setTextSize(28);
-    canvas.drawString("タップで停止", 270, 450);
+    canvas.drawString("タップで停止", 270, 920);
 
     canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
 }
@@ -1867,18 +1931,21 @@ void checkSwitches() {
     // Lスイッチ（上/戻る）
     if (!sw_l && sw_l_prev) {
         Serial.println("SW_L pressed");
+        last_interaction_ms = millis();
         handleSwitch('L');
     }
 
     // Rスイッチ（下/進む）
     if (!sw_r && sw_r_prev) {
         Serial.println("SW_R pressed");
+        last_interaction_ms = millis();
         handleSwitch('R');
     }
 
     // Pスイッチ（決定/メニュー）
     if (!sw_p && sw_p_prev) {
         Serial.println("SW_P pressed");
+        last_interaction_ms = millis();
         handleSwitch('P');
     }
 
@@ -1954,6 +2021,7 @@ void handleSwitch(char sw) {
                 } else {
                     // 一番上でLを押すと戻る
                     ui_state = UI_LIST;
+                    scrollToToday();
                     drawList();
                 }
             } else if (sw == 'R') {
@@ -2167,59 +2235,81 @@ void handleSettingsSelect() {
             drawSettings();
             break;
 
-        case SET_SOUND_TEST:
-            // サウンドテスト
-            canvas.fillCanvas(0);
-            canvas.setTextColor(15);
-            canvas.setTextDatum(MC_DATUM);
-            canvas.setTextSize(32);
-            canvas.drawString("MIDI再生テスト中...", 270, 420);
-            canvas.setTextSize(26);
-            canvas.drawString(config.midi_file, 270, 480);
-            canvas.drawString("タップで停止", 270, 540);
-            canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+        case SET_SOUND_TEST: {
+            // サウンドテスト: 本番アラームと同じ非同期再生経路でテスト
+            // startMidiPlayback → loop()内updateMidiPlayback → finishAlarm
+            Serial.println("\n*** SOUND TEST ***");
+            Serial.printf("  MIDI: %s\n", config.midi_file);
+            Serial.printf("  Exists: %s\n", SD.exists(config.midi_file) ? "YES" : "NO");
+            Serial.printf("  Heap: %d\n", ESP.getFreeHeap());
             
-            play_repeat_remaining = 1;
-            play_duration_ms = 0;
-            Serial.printf("Sound test: %s\n", config.midi_file);
-            if (startMidiPlayback(config.midi_file)) {
-                // 再生開始、5秒またはタッチで停止
-                unsigned long start = millis();
-                bool was_touched = false;
-                while (millis() - start < 5000) {
-                    updateMidiPlayback();
-                    if (!midi_playing) break;
-                    
-                    M5.TP.update();
-                    if (M5.TP.available() && M5.TP.getFingerNum() > 0) {
-                        if (!was_touched) {
-                            was_touched = true;
-                            break;  // 停止
-                        }
-                    } else {
-                        was_touched = false;
-                    }
-                    delay(10);
-                }
-                stopMidiPlayback();
-            } else {
-                // 再生失敗 - エラー表示
+            if (!SD.exists(config.midi_file)) {
+                Serial.println("  => MIDI file not found!");
                 canvas.fillCanvas(0);
+                canvas.setTextColor(15);
                 canvas.setTextDatum(MC_DATUM);
                 canvas.setTextSize(28);
-                canvas.drawString("MIDI再生失敗", 270, 440);
+                canvas.drawString("MIDI再生失敗", 270, 400);
                 canvas.setTextSize(22);
-                canvas.drawString(config.midi_file, 270, 490);
-                canvas.drawString("ファイルを確認してください", 270, 530);
+                canvas.drawString(config.midi_file, 270, 450);
+                canvas.drawString("ファイルを確認してください", 270, 490);
                 canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
-                delay(2000);
+                delay(3000);
+                drawSettings();
+                break;
             }
-            drawSettings();
+            
+            // 鳴動パラメータ設定（本番と同じ）
+            int dur = config.play_duration;
+            play_duration_ms = dur * 1000;
+            int rep = config.play_repeat;
+            if (rep < 1) rep = 1;
+            play_repeat_remaining = rep;
+            play_start_ms = millis();
+            playing_event = -1;  // テスト用（特定イベントなし）
+            
+            Serial.printf("  Duration: %s, Repeat: %d\n",
+                          dur == 0 ? "1song" : (String(dur) + "sec").c_str(), rep);
+            
+            if (startMidiPlayback(config.midi_file)) {
+                Serial.println("  => Playback started OK");
+                ui_state = UI_PLAYING;
+                // テスト用の再生画面
+                canvas.fillCanvas(0);
+                canvas.setTextColor(15);
+                canvas.setTextDatum(MC_DATUM);
+                canvas.setTextSize(48);
+                canvas.drawString("SOUND TEST", 270, 200);
+                canvas.setTextSize(24);
+                canvas.drawString(config.midi_file, 270, 300);
+                String info = "";
+                if (dur > 0) info += String(dur) + "秒";
+                else info += "1曲";
+                info += " x" + String(rep) + "回";
+                canvas.drawString(info, 270, 350);
+                canvas.setTextSize(28);
+                canvas.drawString("タップで停止", 270, 450);
+                canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+            } else {
+                Serial.println("  => Playback FAILED!");
+                canvas.fillCanvas(0);
+                canvas.setTextColor(15);
+                canvas.setTextDatum(MC_DATUM);
+                canvas.setTextSize(28);
+                canvas.drawString("MIDI再生失敗", 270, 400);
+                canvas.setTextSize(22);
+                canvas.drawString(config.midi_file, 270, 450);
+                canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+                delay(3000);
+                drawSettings();
+            }
             break;
+        }
 
         case SET_SAVE_EXIT:
             saveConfig();
             ui_state = UI_LIST;
+            scrollToToday();
             drawList();
             break;
     }
@@ -2229,6 +2319,7 @@ void handleSettingsSelect() {
 // タッチ処理
 //==============================================================================
 void handleTouch(int tx, int ty) {
+    last_interaction_ms = millis();
     switch (ui_state) {
         case UI_LIST: {
             // ボタンチェック
@@ -2388,6 +2479,7 @@ void handleTouch(int tx, int ty) {
                 if (tx >= 285 && tx < 415) {
                     // 戻る（保存せず一覧へ）
                     ui_state = UI_LIST;
+                    scrollToToday();
                     drawList();
                     return;
                 }
@@ -2414,17 +2506,66 @@ void handleTouch(int tx, int ty) {
 
 //==============================================================================
 // アラームチェック
+// triggeredフラグの説明:
+//   ICS更新は30分間隔のため、発火済みアラームもリストに残る。
+//   triggeredフラグで同じアラームが繰り返し発火するのを防止する。
+//   ICS再取得時に全イベントが再構築され、過去のアラームは
+//   parseICS内で triggered=true に初期化される。
 //==============================================================================
 void checkAlarms() {
     if (midi_playing) return;  // 再生中はスキップ
 
     time_t now = time(nullptr);
     
+    // 毎分アラームリストをシリアル出力（デバッグ：未発火の未来アラームのみ）
+    if (now - last_alarm_debug >= 60) {
+        last_alarm_debug = now;
+        struct tm lt;
+        localtime_r(&now, &lt);
+        Serial.printf("\n=== ALARM CHECK [%02d/%02d %02d:%02d:%02d] ===\n",
+                      lt.tm_mon + 1, lt.tm_mday, lt.tm_hour, lt.tm_min, lt.tm_sec);
+        
+        int pending_count = 0;
+        for (int i = 0; i < event_count; i++) {
+            if (!events[i].has_alarm) continue;
+            if (events[i].triggered) continue;  // 発火済みはスキップ
+            
+            pending_count++;
+            struct tm at;
+            localtime_r(&events[i].alarm_time, &at);
+            struct tm st;
+            localtime_r(&events[i].start, &st);
+            
+            long remain_sec = (long)(events[i].alarm_time - now);
+            
+            Serial.printf("  [%d] %s\n", i, events[i].summary.c_str());
+            Serial.printf("      event:%02d/%02d %02d:%02d  alarm:%02d/%02d %02d:%02d  "
+                          "offset:%dmin  remain:%ldsec\n",
+                          st.tm_mon+1, st.tm_mday, st.tm_hour, st.tm_min,
+                          at.tm_mon+1, at.tm_mday, at.tm_hour, at.tm_min,
+                          events[i].offset_min, remain_sec);
+            if (events[i].midi_file.length() > 0) {
+                Serial.printf("      midi:%s (%s)\n", 
+                              events[i].midi_file.c_str(),
+                              events[i].midi_is_url ? "URL" : "SD");
+            }
+        }
+        if (pending_count == 0) {
+            Serial.println("  (no pending alarms)");
+        }
+        Serial.printf("=== events:%d, pending alarms:%d, heap:%d ===\n\n",
+                      event_count, pending_count, ESP.getFreeHeap());
+    }
+    
     for (int i = 0; i < event_count; i++) {
         // %AL%マーカーがある予定のみアラームをチェック
         if (events[i].has_alarm && !events[i].triggered && events[i].alarm_time <= now) {
             // アラーム発火！
-            Serial.printf("ALARM triggered: %s\n", events[i].summary.c_str());
+            Serial.printf("\n*** ALARM FIRING! ***\n");
+            Serial.printf("  Event: %s\n", events[i].summary.c_str());
+            Serial.printf("  alarm_time <= now : %ld <= %ld\n", 
+                          (long)events[i].alarm_time, (long)now);
+            
             playing_event = i;
             
             // 鳴動時間を決定（イベント指定 > 設定値）
@@ -2438,19 +2579,22 @@ void checkAlarms() {
             if (rep < 1) rep = 1;
             play_repeat_remaining = rep;
             
-            Serial.printf("Duration: %s, Repeat: %d\n", 
-                          dur == 0 ? "1曲" : (String(dur) + "秒").c_str(),
+            Serial.printf("  Duration: %s, Repeat: %d\n", 
+                          dur == 0 ? "1song" : (String(dur) + "sec").c_str(),
                           play_repeat_remaining);
             
             // イベント固有のMIDIファイルを取得
             String midiPath = getMidiPath(i);
-            Serial.printf("Using MIDI: %s\n", midiPath.c_str());
+            Serial.printf("  MIDI file: %s\n", midiPath.c_str());
+            Serial.printf("  File exists: %s\n", SD.exists(midiPath.c_str()) ? "YES" : "NO");
             
             play_start_ms = millis();
             if (startMidiPlayback(midiPath.c_str())) {
+                Serial.println("  => Playback started OK");
                 ui_state = UI_PLAYING;
                 drawPlaying(i);
             } else {
+                Serial.println("  => Playback FAILED!");
                 // MIDI再生失敗時もトリガー済みにする
                 events[i].triggered = true;
             }
@@ -2564,6 +2708,8 @@ void setup() {
     ui_state = UI_LIST;
     selected_event = 0;
     page_start = 0;
+    last_interaction_ms = millis();
+    scrollToToday();
     drawList();
 }
 
@@ -2602,6 +2748,21 @@ void loop() {
         checkAlarms();
     }
 
+    // 操作なし3分以上 かつ UI_LIST の場合、毎分自動で今日の先頭へスクロール＋再描画
+    {
+        time_t now_t = time(nullptr);
+        bool idle = (millis() - last_interaction_ms) > 180000;  // 3分
+        
+        if (idle && ui_state == UI_LIST && now_t != (time_t)-1 &&
+            (now_t - last_auto_refresh) >= 60) {
+            last_auto_refresh = now_t;
+            scrollToToday();
+            Serial.printf("AUTO-REFRESH: idle=%lus, scroll to today (idx=%d)\n",
+                          (millis() - last_interaction_ms) / 1000, page_start);
+            drawList();
+        }
+    }
+
     // 定期ICS更新（失敗時はバックオフ）
     time_t now = time(nullptr);
     // 連続失敗時は間隔を延長（最大30分）
@@ -2618,6 +2779,7 @@ void loop() {
             fetchAndUpdate();
             
             if (ui_state == UI_LIST) {
+                scrollToToday();
                 drawList();
             }
         }
