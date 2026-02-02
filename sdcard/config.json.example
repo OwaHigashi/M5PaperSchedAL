@@ -10,5 +10,11 @@
   "alarm_offset": 10,
   "port_select": 1,
   "time_24h": true,
-  "text_wrap": false
+  "text_wrap": false,
+  "ics_poll_min": 1,
+  "play_duration": 0,
+  "play_repeat": 1,
+  "max_events": 99,
+  "max_desc_bytes": 500,
+  "min_free_heap": 80
 }
