@@ -100,6 +100,9 @@ struct Config {
     int ics_poll_min;           // ICS更新頻度（分）
     int play_duration;          // デフォルト鳴動時間(秒) 0=1曲
     int play_repeat;            // デフォルト繰り返し回数
+    int max_events;             // スケジュールバッファ最大件数
+    int max_desc_bytes;         // DESCRIPTION最大バイト数
+    int min_free_heap;          // ヒープ残量下限(KB) これ以下で読み込み停止
 };
 
 struct EventItem {
@@ -279,6 +282,9 @@ void loadConfig() {
     config.ics_poll_min = 30;  // 30分ごと
     config.play_duration = 0;  // 0=1曲
     config.play_repeat = 1;    // 1回
+    config.max_events = 99;    // MAX_EVENTS-1（テスト用1枠確保）
+    config.max_desc_bytes = 500;  // DESCRIPTION上限バイト数
+    config.min_free_heap = 80;    // ヒープ残量下限(KB)
 
     if (!SD.exists(CONFIG_FILE)) {
         Serial.println("Config not found, using defaults");
@@ -288,7 +294,7 @@ void loadConfig() {
     File f = SD.open(CONFIG_FILE, FILE_READ);
     if (!f) return;
 
-    StaticJsonDocument<1024> doc;
+    StaticJsonDocument<1280> doc;
     DeserializationError err = deserializeJson(doc, f);
     f.close();
 
@@ -318,12 +324,21 @@ void loadConfig() {
     }
     if (doc.containsKey("play_duration")) config.play_duration = doc["play_duration"];
     if (doc["play_repeat"]) config.play_repeat = doc["play_repeat"];
+    if (doc["max_events"]) config.max_events = doc["max_events"];
+    if (doc["max_desc_bytes"]) config.max_desc_bytes = doc["max_desc_bytes"];
+    if (doc["min_free_heap"]) config.min_free_heap = doc["min_free_heap"];
+    
+    // 制約チェック
+    if (config.max_events < 10) config.max_events = 10;
+    if (config.max_events > MAX_EVENTS - 1) config.max_events = MAX_EVENTS - 1;
+    if (config.max_desc_bytes < 100) config.max_desc_bytes = 100;
+    if (config.min_free_heap < 40) config.min_free_heap = 40;
 
     Serial.println("Config loaded");
 }
 
 void saveConfig() {
-    StaticJsonDocument<1024> doc;
+    StaticJsonDocument<1280> doc;
     doc["wifi_ssid"] = config.wifi_ssid;
     doc["wifi_pass"] = config.wifi_pass;
     doc["ics_url"] = config.ics_url;
@@ -339,6 +354,9 @@ void saveConfig() {
     doc["ics_poll_min"] = config.ics_poll_min;
     doc["play_duration"] = config.play_duration;
     doc["play_repeat"] = config.play_repeat;
+    doc["max_events"] = config.max_events;
+    doc["max_desc_bytes"] = config.max_desc_bytes;
+    doc["min_free_heap"] = config.min_free_heap;
 
     File f = SD.open(CONFIG_FILE, FILE_WRITE);
     if (!f) {
@@ -463,13 +481,24 @@ String unfoldICS(const String& in) {
     String out;
     out.reserve(in.length());
     for (int i = 0; i < (int)in.length();) {
+        // Handle \r\n
         if (in[i] == '\r' && i + 1 < (int)in.length() && in[i + 1] == '\n') {
             if (i + 2 < (int)in.length() && (in[i + 2] == ' ' || in[i + 2] == '\t')) {
-                i += 3;
+                i += 3;  // Unfold: remove \r\n + space/tab
                 continue;
             }
             out += '\n';
             i += 2;
+            continue;
+        }
+        // Handle \n (without \r)
+        if (in[i] == '\n') {
+            if (i + 1 < (int)in.length() && (in[i + 1] == ' ' || in[i + 1] == '\t')) {
+                i += 2;  // Unfold: remove \n + space/tab
+                continue;
+            }
+            out += '\n';
+            i += 1;
             continue;
         }
         out += in[i++];
@@ -747,7 +776,14 @@ void parseICS(const String& unfolded) {
             continue;
         }
         if (line == "END:VEVENT") {
-            if (inEvent && event_count < MAX_EVENTS - 1) {  // 1枠テストアラーム用に確保
+            if (inEvent && event_count < config.max_events) {
+                // ヒープ残量チェック
+                if (ESP.getFreeHeap() < (size_t)config.min_free_heap * 1024) {
+                    Serial.printf("ICS_PARSE: STOP - heap low (%d < %dKB limit), %d events loaded\n",
+                                  ESP.getFreeHeap(), config.min_free_heap, event_count);
+                    inEvent = false;
+                    break;  // これ以上読み込まない
+                }
                 time_t st = 0;
                 bool is_allday = false;
                 if (parseDT(dtstart_raw, st, is_allday)) {
@@ -764,8 +800,62 @@ void parseICS(const String& unfolded) {
                         parseAL(all_text, off, hasAL, midi_file, midi_is_url,
                                 ev_duration, ev_repeat);
                         
+                        // DEBUG: %al (case insensitive) search in raw text
+                        {
+                            String lower_all = all_text;
+                            lower_all.toLowerCase();
+                            int alPos = lower_all.indexOf("%al");
+                            if (alPos >= 0 || hasAL) {
+                                // %AL found - show context
+                                Serial.printf("ICS_PARSE: [%d] summary='%.40s'\n", 
+                                              event_count, summary.c_str());
+                                Serial.printf("  desc len=%d, all_text len=%d\n",
+                                              (int)desc.length(), (int)all_text.length());
+                                if (alPos >= 0) {
+                                    int showStart = max(0, alPos - 20);
+                                    int showEnd = min((int)all_text.length(), alPos + 30);
+                                    Serial.printf("  %%al at pos %d: '", alPos);
+                                    for (int ci = showStart; ci < showEnd; ci++) {
+                                        char ch = all_text[ci];
+                                        if (ch >= 0x20 && ch < 0x7F) {
+                                            Serial.printf("%c", ch);
+                                        } else {
+                                            Serial.printf("[%02X]", (uint8_t)ch);
+                                        }
+                                    }
+                                    Serial.println("'");
+                                }
+                                Serial.printf("  parseAL: hasAL=%d, offset=%d\n", hasAL, off);
+                            } else if (desc.length() > 100) {
+                                // Long desc but no %al - show first 80 chars as hex+ascii
+                                Serial.printf("ICS_PARSE: [%d] NO %%al, summary='%.40s'\n",
+                                              event_count, summary.c_str());
+                                Serial.printf("  desc(%d chars) first 80: '", (int)desc.length());
+                                int showLen = min(80, (int)desc.length());
+                                for (int ci = 0; ci < showLen; ci++) {
+                                    char ch = desc[ci];
+                                    if (ch >= 0x20 && ch < 0x7F) {
+                                        Serial.printf("%c", ch);
+                                    } else {
+                                        Serial.printf("[%02X]", (uint8_t)ch);
+                                    }
+                                }
+                                Serial.println("'");
+                            }
+                        }
+                        
                         events[event_count].start = st;
                         events[event_count].summary = summary;
+                        // DESCRIPTIONは設定値で切り詰め（メモリ節約）
+                        // parseALは全文で実行済みなので検出精度に影響なし
+                        if ((int)desc.length() > config.max_desc_bytes) {
+                            // UTF-8安全に切る（マルチバイトの途中で切らない）
+                            int cutAt = config.max_desc_bytes;
+                            while (cutAt > 0 && ((uint8_t)desc[cutAt] & 0xC0) == 0x80) {
+                                cutAt--;  // 継続バイトをスキップ
+                            }
+                            desc = desc.substring(0, cutAt);
+                        }
                         events[event_count].description = desc;
                         events[event_count].has_alarm = hasAL;
                         events[event_count].is_allday = is_allday;
@@ -828,8 +918,9 @@ void fetchAndUpdate() {
     
     last_fetch = time(nullptr);
     fetch_fail_count = 0;
-    Serial.printf("Fetched %d events (heap: %d, next fetch in %d min)\n", 
-                  event_count, ESP.getFreeHeap(), config.ics_poll_min);
+    Serial.printf("Fetched %d events (heap: %d, next fetch in %d min, limit: %d events/%dKB min heap)\n", 
+                  event_count, ESP.getFreeHeap(), config.ics_poll_min,
+                  config.max_events, config.min_free_heap);
 }
 
 //==============================================================================
