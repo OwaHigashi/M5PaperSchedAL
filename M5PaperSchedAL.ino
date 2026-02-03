@@ -3,7 +3,8 @@
  * 
  * Features:
  * - ICS calendar fetch with Basic Auth support
- * - %AL% / %AL=xx% alarm marker detection (case insensitive)
+ * - !...! alarm marker detection (e.g. !>10!, !<5+song.mid@15*2!)
+ *   - SUMMARY: single ! = default alarm (!!)
  * - MIDI playback via custom player (SysEx support)
  * - Touch UI: List → Detail → Playing
  * - Settings menu via L/R/P switches
@@ -93,7 +94,7 @@ struct Config {
     char midi_file[64];
     char midi_url[128];         // MIDIダウンロード用ベースURL
     uint32_t midi_baud;
-    int alarm_offset_default;   // %AL%のみの場合のデフォルト分
+    int alarm_offset_default;   // !!のみの場合のデフォルト分
     int port_select;            // 0=A, 1=B, 2=C
     bool time_24h;              // true=24時間制, false=12時間制
     bool text_wrap;             // true=折り返し, false=切り詰め
@@ -113,7 +114,7 @@ struct EventItem {
     String description;
     String midi_file;           // 指定されたMIDIファイル名
     bool midi_is_url;           // true=URLからダウンロード, false=SDカード
-    bool has_alarm;             // %AL%マーカーがあるか
+    bool has_alarm;             // !...!マーカーがあるか
     bool triggered;             // アラーム発火済みフラグ
     bool is_allday;             // 終日予定フラグ
     int play_duration_sec;      // 鳴動時間(秒) 0=1曲 -1=設定値使用
@@ -558,18 +559,16 @@ bool parseDT(const String& raw, time_t& out, bool& is_allday) {
     return out != (time_t)-1;
 }
 
-// %AL% または %AL=xx% を検索 (大文字小文字不問)
-// %AL% パーサー
-// 書式: %AL%, %AL>10%, %AL<10%, %AL+file%, %AL-file%,
-//       %AL@秒%, %AL@%(1曲), %AL*回数%
-//       組み合わせ自由: %AL>10+file@15*3%
+// !...! アラームマーカーパーサー（新構文）
+// 書式: !!, !>10!, !<10!, !+file!, !-file!,
+//       !@秒!, !@!(1曲), !*回数!
+//       組み合わせ自由: !>10+file@15*3!
 // > = 分前, < = 分後, + = URLからDL, - = SDカードから
 // @ = 鳴動秒(@のみ=1曲), * = 繰り返し回数
-bool parseAL(const String& s, int& off, bool& found, String& midi_file, 
-             bool& midi_is_url, int& duration_sec, int& repeat_count) {
-    String lower = s;
-    lower.toLowerCase();
-    
+// is_summary=true の場合、単独の ! も !! として認識
+bool parseAlarmMarker(const String& s, bool is_summary, int& off, bool& found, 
+                      String& midi_file, bool& midi_is_url, 
+                      int& duration_sec, int& repeat_count) {
     found = false;
     off = config.alarm_offset_default;
     midi_file = "";
@@ -578,26 +577,44 @@ bool parseAL(const String& s, int& off, bool& found, String& midi_file,
     repeat_count = -1;   // -1 = 設定値使用
     int maxOff = -1;
     
+    // SUMMARYの場合: 単独の ! をチェック (!! として扱う)
+    if (is_summary) {
+        int exclamCount = 0;
+        for (int i = 0; i < (int)s.length(); i++) {
+            if (s[i] == '!') exclamCount++;
+        }
+        // 単独の ! が1つだけ → デフォルトアラーム
+        if (exclamCount == 1) {
+            found = true;
+            return true;  // デフォルト値のまま返す
+        }
+    }
+    
     int searchStart = 0;
-    while (searchStart < (int)lower.length()) {
-        int p = lower.indexOf("%al", searchStart);
+    while (searchStart < (int)s.length()) {
+        // !...! パターンを検索
+        int p = s.indexOf('!', searchStart);
         if (p < 0) break;
         
-        // 終了の%を探す
-        int endpct = lower.indexOf('%', p + 3);
-        if (endpct < 0) {
-            searchStart = p + 3;
-            continue;
+        // 終了の!を探す
+        int endExcl = s.indexOf('!', p + 1);
+        if (endExcl < 0) {
+            // SUMMARYで末尾の単独! → デフォルトアラーム
+            if (is_summary) {
+                found = true;
+                return true;
+            }
+            break;
         }
         
         found = true;
-        String content = s.substring(p + 3, endpct);  // %AL と % の間
+        String content = s.substring(p + 1, endExcl);  // ! と ! の間
         
         int thisOff = config.alarm_offset_default;
         bool thisIsUrl = false;
         String thisFile = "";
         
-        // パース: >数値, <数値, +ファイル, -ファイル, @秒, *回数
+        // パース: >数値, <数値, =数値, +ファイル, -ファイル, @秒, *回数
         int i = 0;
         while (i < (int)content.length()) {
             char c = content[i];
@@ -681,7 +698,7 @@ bool parseAL(const String& s, int& off, bool& found, String& midi_file,
             midi_is_url = thisIsUrl;
         }
         
-        searchStart = endpct + 1;
+        searchStart = endExcl + 1;
     }
     
     if (found && maxOff != -1) {
@@ -689,6 +706,13 @@ bool parseAL(const String& s, int& off, bool& found, String& midi_file,
     }
     
     return found;
+}
+
+// 後方互換: SUMMARYとDESCRIPTIONを連結して検索（旧API互換）
+bool parseAL(const String& s, int& off, bool& found, String& midi_file, 
+             bool& midi_is_url, int& duration_sec, int& repeat_count) {
+    return parseAlarmMarker(s, false, off, found, midi_file, midi_is_url,
+                            duration_sec, repeat_count);
 }
 
 void sortEvents() {
@@ -789,46 +813,37 @@ void parseICS(const String& unfolded) {
                 if (parseDT(dtstart_raw, st, is_allday)) {
                     // 過去24時間 〜 将来1年以内の予定を表示
                     if (st > now - 86400 && st < now + 365 * 86400) {
-                        // %AL%をタイトル、説明、どこでも検索
-                        String all_text = summary + " " + desc;
+                        // !...! マーカーを検索（SUMMARYは単独!も認識）
                         int off = 0;
                         bool hasAL = false;
                         String midi_file = "";
                         bool midi_is_url = false;
                         int ev_duration = -1;
                         int ev_repeat = -1;
-                        parseAL(all_text, off, hasAL, midi_file, midi_is_url,
-                                ev_duration, ev_repeat);
                         
-                        // DEBUG: %al (case insensitive) search in raw text
+                        // まずSUMMARYで検索（単独!もOK）
+                        parseAlarmMarker(summary, true, off, hasAL, midi_file, midi_is_url,
+                                         ev_duration, ev_repeat);
+                        
+                        // SUMMARYで見つからなければDESCRIPTIONで検索
+                        if (!hasAL && desc.length() > 0) {
+                            parseAlarmMarker(desc, false, off, hasAL, midi_file, midi_is_url,
+                                             ev_duration, ev_repeat);
+                        }
+                        
+                        // DEBUG: !マーカー検出状況
                         {
-                            String lower_all = all_text;
-                            lower_all.toLowerCase();
-                            int alPos = lower_all.indexOf("%al");
-                            if (alPos >= 0 || hasAL) {
-                                // %AL found - show context
+                            int exclPos = summary.indexOf('!');
+                            if (exclPos < 0) exclPos = desc.indexOf('!');
+                            if (exclPos >= 0 || hasAL) {
+                                // ! found - show context
                                 Serial.printf("ICS_PARSE: [%d] summary='%.40s'\n", 
                                               event_count, summary.c_str());
-                                Serial.printf("  desc len=%d, all_text len=%d\n",
-                                              (int)desc.length(), (int)all_text.length());
-                                if (alPos >= 0) {
-                                    int showStart = max(0, alPos - 20);
-                                    int showEnd = min((int)all_text.length(), alPos + 30);
-                                    Serial.printf("  %%al at pos %d: '", alPos);
-                                    for (int ci = showStart; ci < showEnd; ci++) {
-                                        char ch = all_text[ci];
-                                        if (ch >= 0x20 && ch < 0x7F) {
-                                            Serial.printf("%c", ch);
-                                        } else {
-                                            Serial.printf("[%02X]", (uint8_t)ch);
-                                        }
-                                    }
-                                    Serial.println("'");
-                                }
-                                Serial.printf("  parseAL: hasAL=%d, offset=%d\n", hasAL, off);
+                                Serial.printf("  desc len=%d\n", (int)desc.length());
+                                Serial.printf("  parseAlarmMarker: hasAL=%d, offset=%d\n", hasAL, off);
                             } else if (desc.length() > 100) {
-                                // Long desc but no %al - show first 80 chars as hex+ascii
-                                Serial.printf("ICS_PARSE: [%d] NO %%al, summary='%.40s'\n",
+                                // Long desc but no ! - show first 80 chars as hex+ascii
+                                Serial.printf("ICS_PARSE: [%d] NO alarm marker, summary='%.40s'\n",
                                               event_count, summary.c_str());
                                 Serial.printf("  desc(%d chars) first 80: '", (int)desc.length());
                                 int showLen = min(80, (int)desc.length());
@@ -847,7 +862,7 @@ void parseICS(const String& unfolded) {
                         events[event_count].start = st;
                         events[event_count].summary = summary;
                         // DESCRIPTIONは設定値で切り詰め（メモリ節約）
-                        // parseALは全文で実行済みなので検出精度に影響なし
+                        // parseAlarmMarkerは切り詰め前に実行済みなので検出精度に影響なし
                         if ((int)desc.length() > config.max_desc_bytes) {
                             // UTF-8安全に切る（マルチバイトの途中で切らない）
                             int cutAt = config.max_desc_bytes;
@@ -2649,7 +2664,7 @@ void checkAlarms() {
     }
     
     for (int i = 0; i < event_count; i++) {
-        // %AL%マーカーがある予定のみアラームをチェック
+        // !...!マーカーがある予定のみアラームをチェック
         if (events[i].has_alarm && !events[i].triggered && events[i].alarm_time <= now) {
             // アラーム発火！
             Serial.printf("\n*** ALARM FIRING! ***\n");
