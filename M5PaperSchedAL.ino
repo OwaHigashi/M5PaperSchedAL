@@ -3,7 +3,8 @@
  * 
  * Features:
  * - ICS calendar fetch with Basic Auth support
- * - %AL% / %AL=xx% alarm marker detection (case insensitive)
+ * - !...! alarm marker detection (e.g. !>10!, !<5+song.mid@15*2!)
+ *   - SUMMARY: single ! = default alarm (!!)
  * - MIDI playback via custom player (SysEx support)
  * - Touch UI: List → Detail → Playing
  * - Settings menu via L/R/P switches
@@ -12,7 +13,26 @@
  * Hardware:
  * - M5Paper v1.1
  * - Unit Synth on Port B (GPIO 33 TX)
+ * 
+ * Required Libraries and Versions:
+ * - Board: M5Stack by M5Stack (2.1.4)
+ *   - Arduino IDE: Tools > Board > Boards Manager > "M5Stack" 
+ * - Library: M5EPD by M5EPD (0.1.5)
+ *   - Arduino IDE: Tools > Manage Libraries > "M5EPD"
+ * - Library: ArduinoJson by Benoit Blanchon (6.21.x or later)
+ *   - Arduino IDE: Tools > Manage Libraries > "ArduinoJson"
+ * - Library: M5Unit-Synth by M5Stack (1.0.x or later)
+ *   - Arduino IDE: Tools > Manage Libraries > "M5Unit-Synth"
+ *   - Provides UNIT_SYNTH_BAUD constant for correct baud rate
+ * 
+ * Note: WiFi, WiFiClientSecure, HTTPClient, SD, time, base64 are included
+ *       in ESP32 core (part of M5Stack board package)
  ******************************************************************************/
+
+//==============================================================================
+// ビルドバージョン (※コード更新時はここを変更)
+//==============================================================================
+#define BUILD_VERSION "016"  // <-- UPDATE THIS ON EACH CODE CHANGE
 
 #include <M5EPD.h>
 #include <WiFi.h>
@@ -22,6 +42,7 @@
 #include <ArduinoJson.h>
 #include <time.h>
 #include <base64.h>
+#include <M5UnitSynth.h>  // Unit Synth公式ライブラリ（ボーレート定義用）
 
 // Custom MIDI player (standard SD library compatible)
 #include "SimpleMIDIPlayer.h"
@@ -51,6 +72,7 @@ String getMidiPath(int eventIdx);
 void stopMidiPlayback();
 void updateMidiPlayback();
 void finishAlarm();
+void sendNtfyNotification(const String& title, const String& message);
 
 //==============================================================================
 // ピン定義
@@ -66,7 +88,11 @@ void finishAlarm();
 //==============================================================================
 // デフォルト設定値
 //==============================================================================
-#define DEFAULT_MIDI_BAUD       31250
+// UNIT_SYNTH_BAUD が M5UnitSynth.h で定義されていない場合のフォールバック
+#ifndef UNIT_SYNTH_BAUD
+#define UNIT_SYNTH_BAUD 31250
+#endif
+#define DEFAULT_MIDI_BAUD       UNIT_SYNTH_BAUD
 #define DEFAULT_ALARM_OFFSET    10      // デフォルト10分前
 #define DEFAULT_ICS_POLL_SEC    1800    // 30分ごと更新
 #define CONFIG_FILE             "/config.json"
@@ -92,8 +118,9 @@ struct Config {
     char ics_pass[64];          // Basic Auth password
     char midi_file[64];
     char midi_url[128];         // MIDIダウンロード用ベースURL
+    char ntfy_topic[64];        // ntfy.sh トピック名（空なら通知なし）
     uint32_t midi_baud;
-    int alarm_offset_default;   // %AL%のみの場合のデフォルト分
+    int alarm_offset_default;   // !!のみの場合のデフォルト分
     int port_select;            // 0=A, 1=B, 2=C
     bool time_24h;              // true=24時間制, false=12時間制
     bool text_wrap;             // true=折り返し, false=切り詰め
@@ -113,7 +140,7 @@ struct EventItem {
     String description;
     String midi_file;           // 指定されたMIDIファイル名
     bool midi_is_url;           // true=URLからダウンロード, false=SDカード
-    bool has_alarm;             // %AL%マーカーがあるか
+    bool has_alarm;             // !...!マーカーがあるか
     bool triggered;             // アラーム発火済みフラグ
     bool is_allday;             // 終日予定フラグ
     int play_duration_sec;      // 鳴動時間(秒) 0=1曲 -1=設定値使用
@@ -147,6 +174,8 @@ enum SettingsItem {
     SET_ICS_POLL,
     SET_PLAY_DURATION,
     SET_PLAY_REPEAT,
+    SET_NTFY_TOPIC,
+    SET_NTFY_TEST,
     SET_ICS_UPDATE,
     SET_SOUND_TEST,
     SET_SAVE_EXIT,
@@ -246,17 +275,20 @@ void sendCC(uint8_t ch, uint8_t cc, uint8_t val) {
 
 // 全チャンネル停止 + GM Reset
 void stopAllNotes() {
-    // 1. 全チャンネル: All Sound Off + All Notes Off + Reset All Controllers
+    Serial.println("MIDI: Stopping all notes...");
+    
+    // 全チャンネル: All Sound Off + All Notes Off
     for (int ch = 0; ch < 16; ch++) {
         sendCC(ch, 120, 0);  // All Sound Off
         sendCC(ch, 123, 0);  // All Notes Off
-        sendCC(ch, 121, 0);  // Reset All Controllers
     }
+    Serial2.flush();
     delay(50);
     
-    // 2. GM System On (音源をリセット)
+    // GM System On (音源をリセット)
     uint8_t gmReset[] = {0xF0, 0x7E, 0x7F, 0x09, 0x01, 0xF7};
     Serial2.write(gmReset, sizeof(gmReset));
+    Serial2.flush();
     delay(100);
     
     Serial.println("MIDI: All notes off + GM Reset sent");
@@ -274,6 +306,7 @@ void loadConfig() {
     strcpy(config.ics_pass, "");
     strcpy(config.midi_file, "/midi/alarm.mid");
     strcpy(config.midi_url, "");
+    strcpy(config.ntfy_topic, "");  // 空=通知なし
     config.midi_baud = DEFAULT_MIDI_BAUD;
     config.alarm_offset_default = DEFAULT_ALARM_OFFSET;
     config.port_select = 1;  // デフォルトPort B
@@ -310,6 +343,7 @@ void loadConfig() {
     if (doc["ics_pass"])  strlcpy(config.ics_pass, doc["ics_pass"], sizeof(config.ics_pass));
     if (doc["midi_file"]) strlcpy(config.midi_file, doc["midi_file"], sizeof(config.midi_file));
     if (doc["midi_url"])  strlcpy(config.midi_url, doc["midi_url"], sizeof(config.midi_url));
+    if (doc["ntfy_topic"]) strlcpy(config.ntfy_topic, doc["ntfy_topic"], sizeof(config.ntfy_topic));
     if (doc["midi_baud"]) config.midi_baud = doc["midi_baud"];
     if (doc["alarm_offset"]) config.alarm_offset_default = doc["alarm_offset"];
     if (doc["port_select"]) config.port_select = doc["port_select"];
@@ -346,6 +380,7 @@ void saveConfig() {
     doc["ics_pass"] = config.ics_pass;
     doc["midi_file"] = config.midi_file;
     doc["midi_url"] = config.midi_url;
+    doc["ntfy_topic"] = config.ntfy_topic;
     doc["midi_baud"] = config.midi_baud;
     doc["alarm_offset"] = config.alarm_offset_default;
     doc["port_select"] = config.port_select;
@@ -367,6 +402,53 @@ void saveConfig() {
     f.flush();
     f.close();
     Serial.println("Config saved");
+}
+
+//==============================================================================
+// ntfy.sh 通知送信
+//==============================================================================
+void sendNtfyNotification(const String& title, const String& message) {
+    // トピック名が空なら何もしない
+    if (strlen(config.ntfy_topic) == 0) {
+        Serial.println("NTFY: topic not configured, skipping");
+        return;
+    }
+    
+    // WiFi接続確認
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("NTFY: WiFi not connected, skipping");
+        return;
+    }
+    
+    String url = "https://ntfy.sh/" + String(config.ntfy_topic);
+    Serial.printf("NTFY: Sending to %s\n", url.c_str());
+    
+    WiFiClientSecure client;
+    client.setInsecure();  // 証明書検証スキップ
+    
+    HTTPClient http;
+    http.setTimeout(10000);
+    
+    if (!http.begin(client, url)) {
+        Serial.println("NTFY: HTTP begin failed");
+        return;
+    }
+    
+    // ヘッダー設定
+    http.addHeader("Title", title);
+    http.addHeader("Priority", "high");
+    http.addHeader("Tags", "alarm_clock");
+    
+    // POST送信
+    int code = http.POST(message);
+    
+    if (code > 0) {
+        Serial.printf("NTFY: HTTP %d\n", code);
+    } else {
+        Serial.printf("NTFY: HTTP error %d\n", code);
+    }
+    
+    http.end();
 }
 
 //==============================================================================
@@ -558,18 +640,16 @@ bool parseDT(const String& raw, time_t& out, bool& is_allday) {
     return out != (time_t)-1;
 }
 
-// %AL% または %AL=xx% を検索 (大文字小文字不問)
-// %AL% パーサー
-// 書式: %AL%, %AL>10%, %AL<10%, %AL+file%, %AL-file%,
-//       %AL@秒%, %AL@%(1曲), %AL*回数%
-//       組み合わせ自由: %AL>10+file@15*3%
+// !...! アラームマーカーパーサー（新構文）
+// 書式: !!, !>10!, !<10!, !+file!, !-file!,
+//       !@秒!, !@!(1曲), !*回数!
+//       組み合わせ自由: !>10+file@15*3!
 // > = 分前, < = 分後, + = URLからDL, - = SDカードから
 // @ = 鳴動秒(@のみ=1曲), * = 繰り返し回数
-bool parseAL(const String& s, int& off, bool& found, String& midi_file, 
-             bool& midi_is_url, int& duration_sec, int& repeat_count) {
-    String lower = s;
-    lower.toLowerCase();
-    
+// is_summary=true の場合、単独の ! も !! として認識
+bool parseAlarmMarker(const String& s, bool is_summary, int& off, bool& found, 
+                      String& midi_file, bool& midi_is_url, 
+                      int& duration_sec, int& repeat_count) {
     found = false;
     off = config.alarm_offset_default;
     midi_file = "";
@@ -578,26 +658,44 @@ bool parseAL(const String& s, int& off, bool& found, String& midi_file,
     repeat_count = -1;   // -1 = 設定値使用
     int maxOff = -1;
     
+    // SUMMARYの場合: 単独の ! をチェック (!! として扱う)
+    if (is_summary) {
+        int exclamCount = 0;
+        for (int i = 0; i < (int)s.length(); i++) {
+            if (s[i] == '!') exclamCount++;
+        }
+        // 単独の ! が1つだけ → デフォルトアラーム
+        if (exclamCount == 1) {
+            found = true;
+            return true;  // デフォルト値のまま返す
+        }
+    }
+    
     int searchStart = 0;
-    while (searchStart < (int)lower.length()) {
-        int p = lower.indexOf("%al", searchStart);
+    while (searchStart < (int)s.length()) {
+        // !...! パターンを検索
+        int p = s.indexOf('!', searchStart);
         if (p < 0) break;
         
-        // 終了の%を探す
-        int endpct = lower.indexOf('%', p + 3);
-        if (endpct < 0) {
-            searchStart = p + 3;
-            continue;
+        // 終了の!を探す
+        int endExcl = s.indexOf('!', p + 1);
+        if (endExcl < 0) {
+            // SUMMARYで末尾の単独! → デフォルトアラーム
+            if (is_summary) {
+                found = true;
+                return true;
+            }
+            break;
         }
         
         found = true;
-        String content = s.substring(p + 3, endpct);  // %AL と % の間
+        String content = s.substring(p + 1, endExcl);  // ! と ! の間
         
         int thisOff = config.alarm_offset_default;
         bool thisIsUrl = false;
         String thisFile = "";
         
-        // パース: >数値, <数値, +ファイル, -ファイル, @秒, *回数
+        // パース: >数値, <数値, =数値, +ファイル, -ファイル, @秒, *回数
         int i = 0;
         while (i < (int)content.length()) {
             char c = content[i];
@@ -676,6 +774,125 @@ bool parseAL(const String& s, int& off, bool& found, String& midi_file,
         }
         
         // ファイル指定があれば記録
+        if (thisFile.length() > 0) {
+            midi_file = thisFile;
+            midi_is_url = thisIsUrl;
+        }
+        
+        searchStart = endExcl + 1;
+    }
+    
+    if (found && maxOff != -1) {
+        off = maxOff;
+    }
+    
+    return found;
+}
+
+// 後方互換: %AL% 形式も引き続きサポート
+bool parseAL_legacy(const String& s, int& off, bool& found, String& midi_file, 
+                    bool& midi_is_url, int& duration_sec, int& repeat_count) {
+    String lower = s;
+    lower.toLowerCase();
+    
+    found = false;
+    off = config.alarm_offset_default;
+    midi_file = "";
+    midi_is_url = false;
+    duration_sec = -1;
+    repeat_count = -1;
+    int maxOff = -1;
+    
+    int searchStart = 0;
+    while (searchStart < (int)lower.length()) {
+        int p = lower.indexOf("%al", searchStart);
+        if (p < 0) break;
+        
+        int endpct = lower.indexOf('%', p + 3);
+        if (endpct < 0) {
+            searchStart = p + 3;
+            continue;
+        }
+        
+        found = true;
+        String content = s.substring(p + 3, endpct);
+        
+        int thisOff = config.alarm_offset_default;
+        bool thisIsUrl = false;
+        String thisFile = "";
+        
+        int i = 0;
+        while (i < (int)content.length()) {
+            char c = content[i];
+            
+            if (c == '>' || c == '<' || c == '=') {
+                int numStart = i + 1;
+                int numEnd = numStart;
+                while (numEnd < (int)content.length() && 
+                       (isdigit(content[numEnd]) || content[numEnd] == ' ')) {
+                    numEnd++;
+                }
+                if (numEnd > numStart) {
+                    String num = content.substring(numStart, numEnd);
+                    num.trim();
+                    int val = num.toInt();
+                    if (val >= 0 && val <= 24 * 60) {
+                        thisOff = (c == '<') ? -val : val;
+                    }
+                }
+                i = numEnd;
+            } else if (c == '+' || c == '-') {
+                thisIsUrl = (c == '+');
+                int fileStart = i + 1;
+                int fileEnd = fileStart;
+                while (fileEnd < (int)content.length() && 
+                       content[fileEnd] != '>' && content[fileEnd] != '<' &&
+                       content[fileEnd] != '=' && content[fileEnd] != '@' &&
+                       content[fileEnd] != '*') {
+                    fileEnd++;
+                }
+                if (fileEnd > fileStart) {
+                    thisFile = content.substring(fileStart, fileEnd);
+                    thisFile.trim();
+                }
+                i = fileEnd;
+            } else if (c == '@') {
+                int numStart = i + 1;
+                int numEnd = numStart;
+                while (numEnd < (int)content.length() && 
+                       (isdigit(content[numEnd]) || content[numEnd] == ' ')) {
+                    numEnd++;
+                }
+                if (numEnd > numStart) {
+                    String num = content.substring(numStart, numEnd);
+                    num.trim();
+                    duration_sec = num.toInt();
+                } else {
+                    duration_sec = 0;
+                }
+                i = numEnd;
+            } else if (c == '*') {
+                int numStart = i + 1;
+                int numEnd = numStart;
+                while (numEnd < (int)content.length() && 
+                       (isdigit(content[numEnd]) || content[numEnd] == ' ')) {
+                    numEnd++;
+                }
+                if (numEnd > numStart) {
+                    String num = content.substring(numStart, numEnd);
+                    num.trim();
+                    repeat_count = num.toInt();
+                }
+                i = numEnd;
+            } else {
+                i++;
+            }
+        }
+        
+        if (abs(thisOff) > abs(maxOff) || maxOff == -1) {
+            maxOff = thisOff;
+        }
+        
         if (thisFile.length() > 0) {
             midi_file = thisFile;
             midi_is_url = thisIsUrl;
@@ -789,65 +1006,45 @@ void parseICS(const String& unfolded) {
                 if (parseDT(dtstart_raw, st, is_allday)) {
                     // 過去24時間 〜 将来1年以内の予定を表示
                     if (st > now - 86400 && st < now + 365 * 86400) {
-                        // %AL%をタイトル、説明、どこでも検索
-                        String all_text = summary + " " + desc;
+                        // アラームマーカーを検索
+                        // 優先順位: 1. SUMMARYの ! (単独でも可)
+                        //          2. DESCRIPTIONの !...!
+                        //          3. DESCRIPTIONの %AL% (後方互換)
                         int off = 0;
                         bool hasAL = false;
                         String midi_file = "";
                         bool midi_is_url = false;
                         int ev_duration = -1;
                         int ev_repeat = -1;
-                        parseAL(all_text, off, hasAL, midi_file, midi_is_url,
-                                ev_duration, ev_repeat);
                         
-                        // DEBUG: %al (case insensitive) search in raw text
-                        {
-                            String lower_all = all_text;
-                            lower_all.toLowerCase();
-                            int alPos = lower_all.indexOf("%al");
-                            if (alPos >= 0 || hasAL) {
-                                // %AL found - show context
-                                Serial.printf("ICS_PARSE: [%d] summary='%.40s'\n", 
-                                              event_count, summary.c_str());
-                                Serial.printf("  desc len=%d, all_text len=%d\n",
-                                              (int)desc.length(), (int)all_text.length());
-                                if (alPos >= 0) {
-                                    int showStart = max(0, alPos - 20);
-                                    int showEnd = min((int)all_text.length(), alPos + 30);
-                                    Serial.printf("  %%al at pos %d: '", alPos);
-                                    for (int ci = showStart; ci < showEnd; ci++) {
-                                        char ch = all_text[ci];
-                                        if (ch >= 0x20 && ch < 0x7F) {
-                                            Serial.printf("%c", ch);
-                                        } else {
-                                            Serial.printf("[%02X]", (uint8_t)ch);
-                                        }
-                                    }
-                                    Serial.println("'");
-                                }
-                                Serial.printf("  parseAL: hasAL=%d, offset=%d\n", hasAL, off);
-                            } else if (desc.length() > 100) {
-                                // Long desc but no %al - show first 80 chars as hex+ascii
-                                Serial.printf("ICS_PARSE: [%d] NO %%al, summary='%.40s'\n",
-                                              event_count, summary.c_str());
-                                Serial.printf("  desc(%d chars) first 80: '", (int)desc.length());
-                                int showLen = min(80, (int)desc.length());
-                                for (int ci = 0; ci < showLen; ci++) {
-                                    char ch = desc[ci];
-                                    if (ch >= 0x20 && ch < 0x7F) {
-                                        Serial.printf("%c", ch);
-                                    } else {
-                                        Serial.printf("[%02X]", (uint8_t)ch);
-                                    }
-                                }
-                                Serial.println("'");
-                            }
+                        // まずSUMMARYで新構文を検索（単独!もOK）
+                        parseAlarmMarker(summary, true, off, hasAL, midi_file, midi_is_url,
+                                         ev_duration, ev_repeat);
+                        
+                        // SUMMARYで見つからなければDESCRIPTIONで新構文を検索
+                        if (!hasAL && desc.length() > 0) {
+                            parseAlarmMarker(desc, false, off, hasAL, midi_file, midi_is_url,
+                                             ev_duration, ev_repeat);
+                        }
+                        
+                        // まだ見つからなければ %AL% 形式（後方互換）
+                        if (!hasAL && desc.length() > 0) {
+                            parseAL_legacy(desc, off, hasAL, midi_file, midi_is_url,
+                                           ev_duration, ev_repeat);
+                        }
+                        
+                        // DEBUG: アラームマーカー検出状況
+                        if (hasAL) {
+                            Serial.printf("ICS_PARSE: [%d] ALARM found, summary='%.40s'\n", 
+                                          event_count, summary.c_str());
+                            Serial.printf("  offset=%d, duration=%d, repeat=%d\n", 
+                                          off, ev_duration, ev_repeat);
                         }
                         
                         events[event_count].start = st;
                         events[event_count].summary = summary;
                         // DESCRIPTIONは設定値で切り詰め（メモリ節約）
-                        // parseALは全文で実行済みなので検出精度に影響なし
+                        // パース処理は切り詰め前に実行済みなので検出精度に影響なし
                         if ((int)desc.length() > config.max_desc_bytes) {
                             // UTF-8安全に切る（マルチバイトの途中で切らない）
                             int cutAt = config.max_desc_bytes;
@@ -1036,12 +1233,13 @@ bool startMidiPlayback(const char* filename) {
 }
 
 void stopMidiPlayback() {
+    Serial.printf("stopMidiPlayback called, midi_playing=%d\n", midi_playing);
     if (midi_playing) {
         midi.stop();
         midi.close();
         stopAllNotes();
         midi_playing = false;
-        Serial.println("MIDI playback stopped");
+        Serial.println("MIDI playback stopped successfully");
     }
 }
 
@@ -1064,7 +1262,8 @@ void updateMidiPlayback() {
 
     // 鳴動時間チェック（0=1曲なのでスキップ）
     if (play_duration_ms > 0 && (millis() - play_start_ms) >= (unsigned long)play_duration_ms) {
-        Serial.println("Play duration reached");
+        Serial.printf("Play duration reached (%d ms elapsed, limit %d ms)\n",
+                      (int)(millis() - play_start_ms), play_duration_ms);
         finishAlarm();
         return;
     }
@@ -1072,7 +1271,7 @@ void updateMidiPlayback() {
     if (!midi.update()) {
         // 1回の再生完了
         play_repeat_remaining--;
-        Serial.printf("Play finished, remaining: %d\n", play_repeat_remaining);
+        Serial.printf("Play finished (midi.update()=false), remaining: %d\n", play_repeat_remaining);
         
         if (play_repeat_remaining > 0) {
             // 鳴動時間内であれば繰り返し
@@ -1215,6 +1414,18 @@ void drawList() {
     int displayed = 0;
     int listBottom = 850;  // ボタン領域の上まで
 
+    // 「次の予定」を見つける（現在時刻以降で最も近い非終日予定）
+    int nextEventIdx = -1;
+    time_t nextEventTime = 0x7FFFFFFF;  // 最大値
+    for (int i = 0; i < event_count; i++) {
+        if (!events[i].is_allday && events[i].start > now) {
+            if (events[i].start < nextEventTime) {
+                nextEventTime = events[i].start;
+                nextEventIdx = i;
+            }
+        }
+    }
+
     for (int i = page_start; i < event_count && y < listBottom; i++) {
         struct tm st;
         localtime_r(&events[i].start, &st);
@@ -1222,21 +1433,25 @@ void drawList() {
         // 日付が変わったら日付ヘッダーを挿入
         int thisDay = st.tm_mday + st.tm_mon * 100 + st.tm_year * 10000;
         if (thisDay != lastDay && date_header_count < 10) {
-            if (y + 34 + rowH > listBottom) break;
+            if (y + 38 + rowH > listBottom) break;
             
-            // 日付ヘッダー行（グレー背景）
-            canvas.fillRect(0, y, 540, 34, 6);
-            canvas.setTextSize(24);
+            // 日付ヘッダー行（濃いグレー背景 + 白文字で見やすく）
+            canvas.fillRect(0, y, 540, 38, 12);  // 濃いグレー背景
+            canvas.setTextSize(28);  // 少し大きめ
             snprintf(buf, sizeof(buf), "── %d/%d (%s) ──", 
                      st.tm_mon + 1, st.tm_mday,
                      (st.tm_wday == 0) ? "日" : (st.tm_wday == 1) ? "月" :
                      (st.tm_wday == 2) ? "火" : (st.tm_wday == 3) ? "水" :
                      (st.tm_wday == 4) ? "木" : (st.tm_wday == 5) ? "金" : "土");
-            drawText(buf, 130, y + 4);
+            // 擬似太字: 1ピクセルずらして2回描画
+            canvas.setTextColor(0);  // 白文字
+            drawText(buf, 120, y + 5);
+            drawText(buf, 121, y + 5);  // 1px右にずらして重ね描画
+            canvas.setTextColor(15);  // 黒に戻す
             date_header_y0[date_header_count] = y;
-            date_header_y1[date_header_count] = y + 34;
+            date_header_y1[date_header_count] = y + 38;
             date_header_count++;
-            y += 38;
+            y += 42;
             lastDay = thisDay;
         }
         
@@ -1261,33 +1476,76 @@ void drawList() {
             timeStr = formatTime(st.tm_hour, st.tm_min);
         }
         
-        // アラームマーク
+        // アラームマーク（反転表示用に分離）
         String alarmMark = "";
+        bool showAlarmMark = false;
         if (events[i].has_alarm) {
             alarmMark = events[i].triggered ? "*" : "♪";
+            showAlarmMark = !events[i].triggered;  // ♪のみ反転表示
         }
         
         // サマリー（絵文字除去してUTF-8安全に切り取り）
         String summary = removeUnsupportedChars(events[i].summary);
         // 表示幅: 時刻7幅 + マーク2幅 = 9幅使用、残り約28幅
-        int maxWidth = config.text_wrap ? 28 : 32;
+        int maxWidth = config.text_wrap ? 26 : 30;
         String dispSummary = utf8Substring(summary, maxWidth);
+        
+        // 固定位置: 時刻x=10, 音符x=90, サマリーx=118
+        const int TIME_X = 10;
+        const int MARK_X = 90;
+        const int SUMMARY_X = 118;
         
         if (config.text_wrap && summary.length() > dispSummary.length()) {
             // 折り返し：2行表示
-            String line1 = timeStr + " " + alarmMark + dispSummary;
-            drawText(line1, 10, y + 3);
+            // 時刻を描画
+            drawText(timeStr, TIME_X, y + 3);
+            
+            // 音符マークを反転表示
+            if (showAlarmMark) {
+                // 反転表示: 黒背景 + 白文字
+                canvas.fillRect(MARK_X - 2, y + 1, 26, 28, 15);  // 黒背景
+                canvas.setTextColor(0);  // 白文字
+                drawText(alarmMark, MARK_X, y + 3);
+                canvas.setTextColor(15);  // 黒に戻す
+            } else if (alarmMark.length() > 0) {
+                drawText(alarmMark, MARK_X, y + 3);
+            }
+            
+            // サマリー描画
+            drawText(dispSummary, SUMMARY_X, y + 3);
             canvas.setTextSize(22);
             // 2行目
             String rest = summary.substring(dispSummary.length());
             String line2 = utf8Substring(rest, 34);
             drawText(line2, 85, y + 32);
         } else {
-            String line = timeStr + " " + alarmMark + dispSummary;
-            if (summary.length() > dispSummary.length()) {
-                line += "..";
+            // 1行表示
+            // 時刻を描画
+            drawText(timeStr, TIME_X, y + 16);
+            
+            // 音符マークを反転表示
+            if (showAlarmMark) {
+                // 反転表示: 黒背景 + 白文字
+                canvas.fillRect(MARK_X - 2, y + 14, 26, 28, 15);  // 黒背景
+                canvas.setTextColor(0);  // 白文字
+                drawText(alarmMark, MARK_X, y + 16);
+                canvas.setTextColor(15);  // 黒に戻す
+            } else if (alarmMark.length() > 0) {
+                drawText(alarmMark, MARK_X, y + 16);
             }
-            drawText(line, 10, y + 16);
+            
+            // サマリー描画
+            String dispPart = dispSummary;
+            if (summary.length() > dispSummary.length()) {
+                dispPart += "..";
+            }
+            drawText(dispPart, SUMMARY_X, y + 16);
+        }
+        
+        // 「次の予定」にアンダーラインを描画
+        if (i == nextEventIdx) {
+            canvas.drawLine(10, y + rowH - 5, 530, y + rowH - 5, 15);  // 黒線
+            canvas.drawLine(10, y + rowH - 4, 530, y + rowH - 4, 15);  // 太くするため2本目
         }
         
         displayed++;
@@ -1556,6 +1814,8 @@ void drawSettings() {
         "ICS Poll",
         "Play Duration",
         "Play Repeat",
+        "Notify Topic",
+        "Notify Test",
         "ICS Update",
         "Sound Test",
         "Save & Exit"
@@ -1605,6 +1865,8 @@ void drawSettings() {
                 break;
             }
             case SET_PLAY_REPEAT: val = String(config.play_repeat) + "回"; break;
+            case SET_NTFY_TOPIC: val = strlen(config.ntfy_topic) > 0 ? config.ntfy_topic : "(empty)"; break;
+            case SET_NTFY_TEST: val = "[実行]"; break;
             case SET_ICS_UPDATE: val = "[実行]"; break;
             case SET_SOUND_TEST: val = "[実行]"; break;
             case SET_SAVE_EXIT:  val = "[実行]"; break;
@@ -1886,6 +2148,9 @@ void processKeyboardHit(int hit) {
                 break;
             case SET_MIDI_URL:
                 strlcpy(config.midi_url, keyboard_buffer.c_str(), sizeof(config.midi_url));
+                break;
+            case SET_NTFY_TOPIC:
+                strlcpy(config.ntfy_topic, keyboard_buffer.c_str(), sizeof(config.ntfy_topic));
                 break;
         }
         keyboard_symbol_mode = false;
@@ -2310,6 +2575,56 @@ void handleSettingsSelect() {
             break;
         }
 
+        case SET_NTFY_TOPIC:
+            keyboard_target = SET_NTFY_TOPIC;
+            keyboard_buffer = config.ntfy_topic;
+            ui_state = UI_KEYBOARD;
+            drawKeyboard();
+            break;
+
+        case SET_NTFY_TEST: {
+            // 通知テスト
+            Serial.println("\n*** NOTIFY TEST ***");
+            canvas.fillCanvas(0);
+            canvas.setTextColor(15);
+            canvas.setTextDatum(MC_DATUM);
+            canvas.setTextSize(28);
+            
+            if (strlen(config.ntfy_topic) == 0) {
+                Serial.println("  Topic not configured");
+                canvas.drawString("通知テスト失敗", 270, 400);
+                canvas.setTextSize(22);
+                canvas.drawString("Notify Topicが未設定です", 270, 450);
+                canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+                delay(2000);
+            } else if (WiFi.status() != WL_CONNECTED) {
+                Serial.println("  WiFi not connected");
+                canvas.drawString("通知テスト失敗", 270, 400);
+                canvas.setTextSize(22);
+                canvas.drawString("WiFi未接続です", 270, 450);
+                canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+                delay(2000);
+            } else {
+                canvas.drawString("通知送信中...", 270, 400);
+                canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+                
+                Serial.printf("  Topic: %s\n", config.ntfy_topic);
+                sendNtfyNotification("M5Paper Test", "通知テスト - This is a test notification");
+                
+                canvas.fillCanvas(0);
+                canvas.setTextColor(15);
+                canvas.setTextDatum(MC_DATUM);
+                canvas.setTextSize(28);
+                canvas.drawString("通知送信完了", 270, 400);
+                canvas.setTextSize(22);
+                canvas.drawString(config.ntfy_topic, 270, 450);
+                canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+                delay(2000);
+            }
+            drawSettings();
+            break;
+        }
+
         case SET_ICS_UPDATE:
             // ICS再取得
             canvas.fillCanvas(0);
@@ -2613,8 +2928,8 @@ void checkAlarms() {
         last_alarm_debug = now;
         struct tm lt;
         localtime_r(&now, &lt);
-        Serial.printf("\n=== ALARM CHECK [%02d/%02d %02d:%02d:%02d] ===\n",
-                      lt.tm_mon + 1, lt.tm_mday, lt.tm_hour, lt.tm_min, lt.tm_sec);
+        Serial.printf("\n=== ALARM CHECK [%02d/%02d %02d:%02d:%02d] ver.%s ===\n",
+                      lt.tm_mon + 1, lt.tm_mday, lt.tm_hour, lt.tm_min, lt.tm_sec, BUILD_VERSION);
         
         int pending_count = 0;
         for (int i = 0; i < event_count; i++) {
@@ -2649,7 +2964,7 @@ void checkAlarms() {
     }
     
     for (int i = 0; i < event_count; i++) {
-        // %AL%マーカーがある予定のみアラームをチェック
+        // アラームマーカーがある予定のみチェック
         if (events[i].has_alarm && !events[i].triggered && events[i].alarm_time <= now) {
             // アラーム発火！
             Serial.printf("\n*** ALARM FIRING! ***\n");
@@ -2657,15 +2972,29 @@ void checkAlarms() {
             Serial.printf("  alarm_time <= now : %ld <= %ld\n", 
                           (long)events[i].alarm_time, (long)now);
             
+            // ntfy.sh へプッシュ通知送信
+            {
+                struct tm st;
+                localtime_r(&events[i].start, &st);
+                char timeStr[32];
+                snprintf(timeStr, sizeof(timeStr), "%02d:%02d", st.tm_hour, st.tm_min);
+                String notifyMsg = String(timeStr) + " " + events[i].summary;
+                sendNtfyNotification("M5Paper Alarm", notifyMsg);
+            }
+            
             playing_event = i;
             
             // 鳴動時間を決定（イベント指定 > 設定値）
             int dur = events[i].play_duration_sec;
+            Serial.printf("  event.play_duration_sec=%d, config.play_duration=%d\n",
+                          events[i].play_duration_sec, config.play_duration);
             if (dur < 0) dur = config.play_duration;  // 設定値使用
             play_duration_ms = dur * 1000;  // 0=1曲（時間制限なし）
             
             // 繰り返し回数を決定
             int rep = events[i].play_repeat;
+            Serial.printf("  event.play_repeat=%d, config.play_repeat=%d\n",
+                          events[i].play_repeat, config.play_repeat);
             if (rep < 0) rep = config.play_repeat;  // 設定値使用
             if (rep < 1) rep = 1;
             play_repeat_remaining = rep;
@@ -2699,7 +3028,7 @@ void checkAlarms() {
 //==============================================================================
 void setup() {
     Serial.begin(115200);
-    Serial.println("\n=== M5Paper Alarm starting... ===");
+    Serial.printf("\n=== M5Paper Alarm starting... ver.%s ===\n", BUILD_VERSION);
 
     M5.begin();
     M5.TP.SetRotation(90);
@@ -2865,23 +3194,28 @@ void loop() {
     }
 
     // 定期ICS更新（失敗時はバックオフ）
-    time_t now = time(nullptr);
-    // 連続失敗時は間隔を延長（最大30分）
-    int poll_interval = (config.ics_poll_min * 60) * (1 + min(fetch_fail_count, 5));
-    if (now != (time_t)-1 && (now - last_fetch) >= poll_interval) {
-        if (WiFi.status() != WL_CONNECTED) {
-            if (!connectWiFi()) {
-                // WiFi接続失敗時も last_fetch を更新
-                last_fetch = now;
-                fetch_fail_count++;
+    // アラーム再生中はスキップ（HTTP通信がMIDI再生を妨げるため）
+    if (ui_state == UI_PLAYING) {
+        // 再生中はICSフェッチしない
+    } else {
+        time_t now = time(nullptr);
+        // 連続失敗時は間隔を延長（最大30分）
+        int poll_interval = (config.ics_poll_min * 60) * (1 + min(fetch_fail_count, 5));
+        if (now != (time_t)-1 && (now - last_fetch) >= poll_interval) {
+            if (WiFi.status() != WL_CONNECTED) {
+                if (!connectWiFi()) {
+                    // WiFi接続失敗時も last_fetch を更新
+                    last_fetch = now;
+                    fetch_fail_count++;
+                }
             }
-        }
-        if (WiFi.status() == WL_CONNECTED) {
-            fetchAndUpdate();
-            
-            if (ui_state == UI_LIST) {
-                scrollToToday();
-                drawList();
+            if (WiFi.status() == WL_CONNECTED) {
+                fetchAndUpdate();
+                
+                if (ui_state == UI_LIST) {
+                    scrollToToday();
+                    drawList();
+                }
             }
         }
     }
