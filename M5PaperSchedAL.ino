@@ -3,7 +3,7 @@
  * 
  * Features:
  * - ICS calendar fetch with Basic Auth support
- * - !...! alarm marker detection (e.g. !>10!, !<5+song.mid@15*2!)
+ * - !...! alarm marker detection (e.g. !-10!, !+5<song.mid@15*2!)
  *   - SUMMARY: single ! = default alarm (!!)
  * - MIDI playback via custom player (SysEx support)
  * - Touch UI: List → Detail → Playing
@@ -32,7 +32,7 @@
 //==============================================================================
 // ビルドバージョン (※コード更新時はここを変更)
 //==============================================================================
-#define BUILD_VERSION "016"  // <-- UPDATE THIS ON EACH CODE CHANGE
+#define BUILD_VERSION "017"  // <-- UPDATE THIS ON EACH CODE CHANGE
 
 #include <M5EPD.h>
 #include <WiFi.h>
@@ -641,10 +641,10 @@ bool parseDT(const String& raw, time_t& out, bool& is_allday) {
 }
 
 // !...! アラームマーカーパーサー（新構文）
-// 書式: !!, !>10!, !<10!, !+file!, !-file!,
+// 書式: !!, !-10!, !+5!, !>file!, !<file!,
 //       !@秒!, !@!(1曲), !*回数!
-//       組み合わせ自由: !>10+file@15*3!
-// > = 分前, < = 分後, + = URLからDL, - = SDカードから
+//       組み合わせ自由: !-10<file@15*3!
+// - = 分前, + = 分後, > = URLからDL, < = SDカードから
 // @ = 鳴動秒(@のみ=1曲), * = 繰り返し回数
 // is_summary=true の場合、単独の ! も !! として認識
 bool parseAlarmMarker(const String& s, bool is_summary, int& off, bool& found, 
@@ -695,13 +695,14 @@ bool parseAlarmMarker(const String& s, bool is_summary, int& off, bool& found,
         bool thisIsUrl = false;
         String thisFile = "";
         
-        // パース: >数値, <数値, =数値, +ファイル, -ファイル, @秒, *回数
+        // パース: -数値(分前), +数値(分後), >ファイル(URL), <ファイル(SD), @秒, *回数
         int i = 0;
         while (i < (int)content.length()) {
             char c = content[i];
             
-            if (c == '>' || c == '<' || c == '=') {
+            if (c == '-' || c == '+') {
                 // 時間オフセットを読む
+                // -10 = 10分前, +5 = 5分後
                 int numStart = i + 1;
                 int numEnd = numStart;
                 while (numEnd < (int)content.length() && 
@@ -713,19 +714,21 @@ bool parseAlarmMarker(const String& s, bool is_summary, int& off, bool& found,
                     num.trim();
                     int val = num.toInt();
                     if (val >= 0 && val <= 24 * 60) {
-                        thisOff = (c == '<') ? -val : val;
+                        // -は分前（正の値）、+は分後（負の値）
+                        thisOff = (c == '-') ? val : -val;
                     }
                 }
                 i = numEnd;
-            } else if (c == '+' || c == '-') {
+            } else if (c == '>' || c == '<') {
                 // ファイル名を読む
-                thisIsUrl = (c == '+');
+                // > = URLからダウンロード, < = SDカードから
+                thisIsUrl = (c == '>');
                 int fileStart = i + 1;
                 int fileEnd = fileStart;
                 while (fileEnd < (int)content.length() && 
-                       content[fileEnd] != '>' && content[fileEnd] != '<' &&
-                       content[fileEnd] != '=' && content[fileEnd] != '@' &&
-                       content[fileEnd] != '*') {
+                       content[fileEnd] != '-' && content[fileEnd] != '+' &&
+                       content[fileEnd] != '@' && content[fileEnd] != '*' &&
+                       content[fileEnd] != '>' && content[fileEnd] != '<') {
                     fileEnd++;
                 }
                 if (fileEnd > fileStart) {
