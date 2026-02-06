@@ -32,7 +32,7 @@
 //==============================================================================
 // ビルドバージョン (※コード更新時はここを変更)
 //==============================================================================
-#define BUILD_VERSION "017"  // <-- UPDATE THIS ON EACH CODE CHANGE
+#define BUILD_VERSION "025"  // <-- UPDATE THIS ON EACH CODE CHANGE
 
 #include <M5EPD.h>
 #include <WiFi.h>
@@ -73,6 +73,7 @@ void stopMidiPlayback();
 void updateMidiPlayback();
 void finishAlarm();
 void sendNtfyNotification(const String& title, const String& message);
+void trimEventsAroundToday(int maxEvents);
 
 //==============================================================================
 // ピン定義
@@ -532,6 +533,37 @@ String utf8Substring(const String& s, int maxWidth) {
 }
 
 // 絵文字などの表示できない文字を除去
+// 全角ASCII文字（U+FF01〜U+FF5E）を半角（U+0021〜U+007E）に変換
+// アラームマーカーの全角入力（！＞＜＋＠＊等）を半角として認識するため
+String normalizeFullWidth(const String& s) {
+    String result;
+    result.reserve(s.length());
+    int i = 0;
+    while (i < (int)s.length()) {
+        uint8_t b0 = s[i];
+        if (b0 == 0xEF && i + 2 < (int)s.length()) {
+            uint8_t b1 = s[i + 1];
+            uint8_t b2 = s[i + 2];
+            // U+FF01-FF3F: 0xEF 0xBC 0x81-0xBF → ASCII 0x21-0x5F
+            if (b1 == 0xBC && b2 >= 0x81 && b2 <= 0xBF) {
+                result += (char)(b2 - 0x60);
+                i += 3;
+                continue;
+            }
+            // U+FF40-FF5E: 0xEF 0xBD 0x80-0x9E → ASCII 0x60-0x7E
+            if (b1 == 0xBD && b2 >= 0x80 && b2 <= 0x9E) {
+                result += (char)(b2 - 0x20);
+                i += 3;
+                continue;
+            }
+        }
+        // それ以外はそのままコピー
+        result += (char)b0;
+        i++;
+    }
+    return result;
+}
+
 String removeUnsupportedChars(const String& s) {
     String result;
     int i = 0;
@@ -647,9 +679,13 @@ bool parseDT(const String& raw, time_t& out, bool& is_allday) {
 // - = 分前, + = 分後, > = URLからDL, < = SDカードから
 // @ = 鳴動秒(@のみ=1曲), * = 繰り返し回数
 // is_summary=true の場合、単独の ! も !! として認識
-bool parseAlarmMarker(const String& s, bool is_summary, int& off, bool& found, 
+// 全角文字（！＞＜＋－＠＊等）も半角として認識
+bool parseAlarmMarker(const String& s_raw, bool is_summary, int& off, bool& found, 
                       String& midi_file, bool& midi_is_url, 
                       int& duration_sec, int& repeat_count) {
+    // 全角→半角変換（！→!, ＋→+, ＊→* 等）
+    String s = normalizeFullWidth(s_raw);
+    
     found = false;
     off = config.alarm_offset_default;
     midi_file = "";
@@ -792,125 +828,6 @@ bool parseAlarmMarker(const String& s, bool is_summary, int& off, bool& found,
     return found;
 }
 
-// 後方互換: %AL% 形式も引き続きサポート
-bool parseAL_legacy(const String& s, int& off, bool& found, String& midi_file, 
-                    bool& midi_is_url, int& duration_sec, int& repeat_count) {
-    String lower = s;
-    lower.toLowerCase();
-    
-    found = false;
-    off = config.alarm_offset_default;
-    midi_file = "";
-    midi_is_url = false;
-    duration_sec = -1;
-    repeat_count = -1;
-    int maxOff = -1;
-    
-    int searchStart = 0;
-    while (searchStart < (int)lower.length()) {
-        int p = lower.indexOf("%al", searchStart);
-        if (p < 0) break;
-        
-        int endpct = lower.indexOf('%', p + 3);
-        if (endpct < 0) {
-            searchStart = p + 3;
-            continue;
-        }
-        
-        found = true;
-        String content = s.substring(p + 3, endpct);
-        
-        int thisOff = config.alarm_offset_default;
-        bool thisIsUrl = false;
-        String thisFile = "";
-        
-        int i = 0;
-        while (i < (int)content.length()) {
-            char c = content[i];
-            
-            if (c == '>' || c == '<' || c == '=') {
-                int numStart = i + 1;
-                int numEnd = numStart;
-                while (numEnd < (int)content.length() && 
-                       (isdigit(content[numEnd]) || content[numEnd] == ' ')) {
-                    numEnd++;
-                }
-                if (numEnd > numStart) {
-                    String num = content.substring(numStart, numEnd);
-                    num.trim();
-                    int val = num.toInt();
-                    if (val >= 0 && val <= 24 * 60) {
-                        thisOff = (c == '<') ? -val : val;
-                    }
-                }
-                i = numEnd;
-            } else if (c == '+' || c == '-') {
-                thisIsUrl = (c == '+');
-                int fileStart = i + 1;
-                int fileEnd = fileStart;
-                while (fileEnd < (int)content.length() && 
-                       content[fileEnd] != '>' && content[fileEnd] != '<' &&
-                       content[fileEnd] != '=' && content[fileEnd] != '@' &&
-                       content[fileEnd] != '*') {
-                    fileEnd++;
-                }
-                if (fileEnd > fileStart) {
-                    thisFile = content.substring(fileStart, fileEnd);
-                    thisFile.trim();
-                }
-                i = fileEnd;
-            } else if (c == '@') {
-                int numStart = i + 1;
-                int numEnd = numStart;
-                while (numEnd < (int)content.length() && 
-                       (isdigit(content[numEnd]) || content[numEnd] == ' ')) {
-                    numEnd++;
-                }
-                if (numEnd > numStart) {
-                    String num = content.substring(numStart, numEnd);
-                    num.trim();
-                    duration_sec = num.toInt();
-                } else {
-                    duration_sec = 0;
-                }
-                i = numEnd;
-            } else if (c == '*') {
-                int numStart = i + 1;
-                int numEnd = numStart;
-                while (numEnd < (int)content.length() && 
-                       (isdigit(content[numEnd]) || content[numEnd] == ' ')) {
-                    numEnd++;
-                }
-                if (numEnd > numStart) {
-                    String num = content.substring(numStart, numEnd);
-                    num.trim();
-                    repeat_count = num.toInt();
-                }
-                i = numEnd;
-            } else {
-                i++;
-            }
-        }
-        
-        if (abs(thisOff) > abs(maxOff) || maxOff == -1) {
-            maxOff = thisOff;
-        }
-        
-        if (thisFile.length() > 0) {
-            midi_file = thisFile;
-            midi_is_url = thisIsUrl;
-        }
-        
-        searchStart = endpct + 1;
-    }
-    
-    if (found && maxOff != -1) {
-        off = maxOff;
-    }
-    
-    return found;
-}
-
 void sortEvents() {
     // 開始時刻でソート
     for (int i = 0; i < event_count; i++) {
@@ -922,6 +839,63 @@ void sortEvents() {
             }
         }
     }
+}
+
+// ソート済みイベントを「今日中心」に切り詰め
+// 今日以降の予定を優先し、過去は少数のみ残す
+void trimEventsAroundToday(int maxEvents) {
+    if (event_count <= maxEvents) return;
+    
+    time_t now = time(nullptr);
+    
+    // 今日以降の最初のイベントを探す
+    int today_idx = event_count;  // デフォルトは末尾（今日以降がない場合）
+    for (int i = 0; i < event_count; i++) {
+        if (events[i].start >= now - 86400) {  // 24時間前から
+            today_idx = i;
+            break;
+        }
+    }
+    
+    // 今日以降のイベント数
+    int future_count = event_count - today_idx;
+    
+    // 過去の予定を何件残すか（最大10件、または空きスペース分）
+    int keep_past = min(today_idx, min(10, maxEvents - future_count));
+    if (keep_past < 0) keep_past = 0;
+    
+    // 切り詰め開始位置
+    int start_idx = today_idx - keep_past;
+    if (start_idx < 0) start_idx = 0;
+    
+    Serial.printf("TRIM: total=%d, today_idx=%d, future=%d, keep_past=%d, start=%d\n",
+                  event_count, today_idx, future_count, keep_past, start_idx);
+    
+    // 配列をシフト
+    if (start_idx > 0) {
+        for (int i = 0; i < event_count - start_idx; i++) {
+            // 古いイベントのStringを解放
+            if (i < start_idx) {
+                events[i].summary = "";
+                events[i].description = "";
+                events[i].midi_file = "";
+            }
+            events[i] = events[i + start_idx];
+        }
+        event_count -= start_idx;
+    }
+    
+    // まだmaxEventsを超えていれば末尾を切り詰め（将来の遠い予定を削除）
+    if (event_count > maxEvents) {
+        for (int i = maxEvents; i < event_count; i++) {
+            events[i].summary = "";
+            events[i].description = "";
+            events[i].midi_file = "";
+        }
+        event_count = maxEvents;
+    }
+    
+    Serial.printf("TRIM: result=%d events\n", event_count);
 }
 
 String httpGetICS() {
@@ -979,7 +953,11 @@ void parseICS(const String& unfolded) {
     bool inEvent = false;
     String dtstart_raw, summary, desc;
 
+    Serial.printf("ICS_PARSE: Start parsing (input size: %d, heap: %d)\n", 
+                  unfolded.length(), ESP.getFreeHeap());
+
     int pos = 0;
+    int parsed_events = 0;  // パースしたイベント数（条件外含む）
     while (pos < (int)unfolded.length()) {
         int nl = unfolded.indexOf('\n', pos);
         if (nl < 0) nl = unfolded.length();
@@ -996,7 +974,9 @@ void parseICS(const String& unfolded) {
             continue;
         }
         if (line == "END:VEVENT") {
-            if (inEvent && event_count < config.max_events) {
+            parsed_events++;
+            // MAX_EVENTSまで読み込み可能（後でtrimEventsAroundTodayで切り詰め）
+            if (inEvent && event_count < MAX_EVENTS) {
                 // ヒープ残量チェック
                 if (ESP.getFreeHeap() < (size_t)config.min_free_heap * 1024) {
                     Serial.printf("ICS_PARSE: STOP - heap low (%d < %dKB limit), %d events loaded\n",
@@ -1007,12 +987,11 @@ void parseICS(const String& unfolded) {
                 time_t st = 0;
                 bool is_allday = false;
                 if (parseDT(dtstart_raw, st, is_allday)) {
-                    // 過去24時間 〜 将来1年以内の予定を表示
-                    if (st > now - 86400 && st < now + 365 * 86400) {
+                    // 過去24時間 〜 将来30日以内の予定を表示
+                    if (st > now - 86400 && st < now + 30 * 86400) {
                         // アラームマーカーを検索
                         // 優先順位: 1. SUMMARYの ! (単独でも可)
                         //          2. DESCRIPTIONの !...!
-                        //          3. DESCRIPTIONの %AL% (後方互換)
                         int off = 0;
                         bool hasAL = false;
                         String midi_file = "";
@@ -1024,24 +1003,21 @@ void parseICS(const String& unfolded) {
                         parseAlarmMarker(summary, true, off, hasAL, midi_file, midi_is_url,
                                          ev_duration, ev_repeat);
                         
-                        // SUMMARYで見つからなければDESCRIPTIONで新構文を検索
+                        // SUMMARYで見つからなければDESCRIPTIONで検索
                         if (!hasAL && desc.length() > 0) {
                             parseAlarmMarker(desc, false, off, hasAL, midi_file, midi_is_url,
                                              ev_duration, ev_repeat);
                         }
                         
-                        // まだ見つからなければ %AL% 形式（後方互換）
-                        if (!hasAL && desc.length() > 0) {
-                            parseAL_legacy(desc, off, hasAL, midi_file, midi_is_url,
-                                           ev_duration, ev_repeat);
-                        }
-                        
                         // DEBUG: アラームマーカー検出状況
                         if (hasAL) {
-                            Serial.printf("ICS_PARSE: [%d] ALARM found, summary='%.40s'\n", 
-                                          event_count, summary.c_str());
-                            Serial.printf("  offset=%d, duration=%d, repeat=%d\n", 
-                                          off, ev_duration, ev_repeat);
+                            struct tm at;
+                            localtime_r(&events[event_count].alarm_time, &at);
+                            Serial.printf("ICS_PARSE: [%d] ALARM '%s'\n", 
+                                          event_count, summary.substring(0, 40).c_str());
+                            Serial.printf("  offset=%d, alarm=%02d/%02d %02d:%02d, triggered=%d\n", 
+                                          off, at.tm_mon+1, at.tm_mday, at.tm_hour, at.tm_min,
+                                          events[event_count].triggered);
                         }
                         
                         events[event_count].start = st;
@@ -1068,7 +1044,12 @@ void parseICS(const String& unfolded) {
                             events[event_count].offset_min = off;
                             // off < 0 の場合は予定後にアラーム
                             events[event_count].alarm_time = st - (time_t)off * 60;
-                            events[event_count].triggered = (events[event_count].alarm_time < now);
+                            // ICS再フェッチ時のアラーム消失防止:
+                            // alarm_timeがnowを過ぎていても、猶予期間内なら未発火扱い
+                            // これにより、ICS再フェッチとアラーム発火のタイミング競合を防ぐ
+                            const time_t ALARM_GRACE_SEC = 600;  // 10分の猶予
+                            events[event_count].triggered = 
+                                (events[event_count].alarm_time < now - ALARM_GRACE_SEC);
                         } else {
                             events[event_count].offset_min = 0;
                             events[event_count].alarm_time = 0;
@@ -1091,11 +1072,24 @@ void parseICS(const String& unfolded) {
             if (c > 0) summary = line.substring(c + 1);
         } else if (line.startsWith("DESCRIPTION")) {
             int c = line.indexOf(':');
-            if (c > 0) desc = line.substring(c + 1);
+            if (c > 0) {
+                // メモリ節約：読み込み時に長さを制限
+                // アラームマーカーは通常先頭にあるので2000バイトで十分
+                int maxParseLen = 2000;
+                int availLen = line.length() - c - 1;
+                if (availLen > maxParseLen) {
+                    desc = line.substring(c + 1, c + 1 + maxParseLen);
+                } else {
+                    desc = line.substring(c + 1);
+                }
+            }
         }
     }
 
+    Serial.printf("ICS_PARSE: Complete - parsed %d events, loaded %d events (heap: %d)\n",
+                  parsed_events, event_count, ESP.getFreeHeap());
     sortEvents();
+    trimEventsAroundToday(config.max_events);
 }
 
 void fetchAndUpdate() {
@@ -3043,8 +3037,18 @@ void setup() {
     pinMode(SW_R_PIN, INPUT_PULLUP);
     pinMode(SW_P_PIN, INPUT_PULLUP);
 
-    // SD初期化
-    if (!SD.begin(4)) {
+    // SD初期化（リトライ付き）
+    delay(100);  // 起動直後の安定待ち
+    bool sd_ok = false;
+    for (int retry = 0; retry < 5; retry++) {
+        if (SD.begin(4)) {
+            sd_ok = true;
+            break;
+        }
+        Serial.printf("SD init retry %d/5...\n", retry + 1);
+        delay(200);
+    }
+    if (!sd_ok) {
         Serial.println("SD init failed!");
         canvas.createCanvas(540, 960);
         canvas.setTextSize(32);
