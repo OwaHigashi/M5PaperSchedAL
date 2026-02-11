@@ -53,24 +53,37 @@ void setup() {
     pinMode(SW_R_PIN, INPUT_PULLUP);
     pinMode(SW_P_PIN, INPUT_PULLUP);
 
-    // SD初期化（リトライ付き）
+    // SD初期化（CMD0リセット付き）
     delay(100);
-    bool sd_ok = false;
-    for (int retry = 0; retry < 5; retry++) {
-        if (SD.begin(4)) { sd_ok = true; break; }
-        Serial.printf("SD init retry %d/5...\n", retry + 1);
-        delay(200);
-    }
-    if (!sd_ok) {
-        Serial.println("SD init failed!");
+    if (!initSD()) {
+        Serial.println("SD init failed! Waiting for user action...");
         canvas.createCanvas(540, 960);
-        canvas.setTextSize(32);
+        canvas.setTextSize(26);
         canvas.drawString("SD Card Error!", 10, 100);
+        canvas.drawString("SDカードを抜き差しして", 10, 160);
+        canvas.drawString("Pボタンでリトライ", 10, 200);
         canvas.pushCanvas(0, 0, UPDATE_MODE_DU4);
-        while (1) delay(1000);
+
+        // Pボタン押下でリトライ（無限ループではなく脱出可能）
+        while (true) {
+            if (digitalRead(SW_P_PIN) == LOW) {
+                delay(50);  // デバウンス
+                Serial.println("Retrying SD init...");
+                if (initSD()) {
+                    Serial.println("SD recovered!");
+                    break;
+                }
+                canvas.fillCanvas(0);
+                canvas.drawString("SD still failed...", 10, 100);
+                canvas.drawString("SDカードを抜き差しして", 10, 160);
+                canvas.drawString("Pボタンでリトライ", 10, 200);
+                canvas.pushCanvas(0, 0, UPDATE_MODE_DU4);
+                delay(500);  // ボタンリリース待ち
+            }
+            delay(50);
+        }
     }
     Serial.println("SD initialized");
-    sd_healthy = true;
 
     // 設定読み込み
     loadConfig();
@@ -111,11 +124,14 @@ void setup() {
     canvas.drawString("Connecting WiFi...", 270, 240);
     canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
 
+    // ★ まずキャッシュからイベント読込（WiFi失敗に備える）
+    if (loadEventsCache()) {
+        Serial.printf("Startup: %d events from cache\n", event_count);
+    }
+
     // WiFi接続
     if (connectWiFi()) {
-        setenv("TZ", TZ_JST, 1);
-        tzset();
-        configTime(0, 0, "pool.ntp.org", "time.google.com");
+        configTzTime(TZ_JST, "pool.ntp.org", "time.google.com", "ntp.nict.jp");
 
         canvas.drawString("WiFi OK! Syncing time...", 270, 280);
         canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
@@ -123,18 +139,28 @@ void setup() {
         // NTP同期待ち
         time_t now = 0;
         int retry = 0;
-        while (now < 1700000000 && retry < 20) {
+        while (retry < 40) {  // 最大20秒
             delay(500);
             now = time(nullptr);
+            if (now > 1700000000) break;  // 2023年以降なら同期完了
             retry++;
         }
-        Serial.printf("NTP sync: %ld (retry: %d)\n", now, retry);
+        if (now < 1700000000) {
+            Serial.printf("NTP sync FAILED after %d retries (time=%ld)\n", retry, now);
+            // 時刻未同期 → ICS取得しても日付フィルタで全件弾かれるのでスキップ
+            canvas.drawString("NTP sync failed, will retry", 270, 320);
+            canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+            delay(1000);
+        } else {
+            Serial.printf("NTP sync OK: %ld (retry: %d)\n", now, retry);
 
-        // ICS取得
-        canvas.drawString("Fetching calendar...", 270, 320);
-        canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
-        fetchAndUpdate();
-        last_fetch = time(nullptr);
+            // ICS取得
+            canvas.drawString("Fetching calendar...", 270, 320);
+            canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+            fetchAndUpdate();
+            last_fetch = time(nullptr);
+            Serial.printf("Initial fetch complete: %d events loaded\n", event_count);
+        }
     } else {
         canvas.drawString("WiFi Failed", 270, 280);
         canvas.drawString("Press P for settings", 270, 320);

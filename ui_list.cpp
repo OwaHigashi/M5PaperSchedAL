@@ -61,6 +61,22 @@ void drawList() {
         }
     }
 
+    if (event_count == 0) {
+        canvas.setTextSize(28);
+        canvas.setTextDatum(MC_DATUM);
+        drawText("予定がありません", 270, 200);
+        canvas.setTextSize(22);
+        if (WiFi.status() != WL_CONNECTED) {
+            drawText("WiFi未接続", 270, 260);
+        } else if (fetch_fail_count > 0) {
+            char msg[64];
+            snprintf(msg, sizeof(msg), "ICS取得失敗 (%d回)", fetch_fail_count);
+            drawText(msg, 270, 260);
+        }
+        drawText("P長押し → 設定", 270, 310);
+        canvas.setTextDatum(TL_DATUM);
+    }
+
     for (int i = page_start; i < event_count && y < listBottom; i++) {
         struct tm st;
         localtime_r(&events[i].start, &st);
