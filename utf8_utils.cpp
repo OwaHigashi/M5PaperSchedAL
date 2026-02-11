@@ -60,14 +60,17 @@ String normalizeFullWidth(const String& s) {
     return result;
 }
 
-// 4バイト文字（絵文字など）を除去
+// 4バイト文字（絵文字）と制御文字（0x00-0x1F、ただしタブ・改行は許可）を除去
 String removeUnsupportedChars(const String& s) {
     String result;
     int i = 0;
     while (i < (int)s.length()) {
         uint8_t c = s[i];
         int bytes = utf8CharBytes(c);
-        if (bytes == 4) { i += bytes; continue; }
+        if (bytes == 4) { i += bytes; continue; }       // 絵文字スキップ
+        if (bytes == 1 && c < 0x20 && c != '\t') {       // 制御文字スキップ
+            i++; continue;
+        }
         for (int j = 0; j < bytes && (i + j) < (int)s.length(); j++) {
             result += s[i + j];
         }

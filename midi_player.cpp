@@ -65,6 +65,8 @@ String getMidiPath(int eventIdx) {
 // 再生制御
 //==============================================================================
 bool startMidiPlayback(const char* filename) {
+    waitEPDReady();
+
     if (!sd_healthy) {
         Serial.println("MIDI: SD not healthy, attempting reinit");
         reinitSD();

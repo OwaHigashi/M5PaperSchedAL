@@ -100,6 +100,7 @@ String normalizeFullWidth(const String& s);
 String removeUnsupportedChars(const String& s);
 
 // sd_utils.cpp
+void waitEPDReady();   // EPD描画完了を待つ（SD操作前に必須）
 bool initSD();
 bool checkSDHealth();
 void reinitSD();

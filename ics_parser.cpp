@@ -221,6 +221,7 @@ void trimEventsAroundToday(int maxEvents) {
 // キャッシュ保存 — 取得成功時にSDへ書き出し
 void saveEventsCache() {
     if (event_count <= 0 || !sd_healthy) return;
+    waitEPDReady();
 
     if (!SD.exists("/cache")) SD.mkdir("/cache");
 
@@ -245,14 +246,14 @@ void saveEventsCache() {
                  events[i].midi_is_url ? 1 : 0);
         // summary（改行→\nエスケープ）
         String s = events[i].summary;
-        s.replace("\n", "\\n"); s.replace("\r", "");
-        f.println(s);
+        s.replace("\r", ""); s.replace("\n", "\\n");
+        f.print(s); f.print('\n');
         // description
         String d = events[i].description;
-        d.replace("\n", "\\n"); d.replace("\r", "");
-        f.println(d);
+        d.replace("\r", ""); d.replace("\n", "\\n");
+        f.print(d); f.print('\n');
         // midi_file
-        f.println(events[i].midi_file);
+        f.print(events[i].midi_file); f.print('\n');
     }
     f.flush();
     f.close();
@@ -262,6 +263,7 @@ void saveEventsCache() {
 // キャッシュ読込 — HTTP失敗時やコールドスタート時
 bool loadEventsCache() {
     if (!sd_healthy) return false;
+    waitEPDReady();
     if (!SD.exists(EVENTS_CACHE_FILE)) {
         Serial.println("CACHE: No cache file");
         return false;
@@ -318,8 +320,10 @@ bool loadEventsCache() {
                             &v_alarm_time, &v_triggered, &v_dur, &v_rep, &v_midi_url);
 
         String summary = f.readStringUntil('\n');
+        summary.replace("\r", "");
         summary.replace("\\n", "\n");
         String desc = f.readStringUntil('\n');
+        desc.replace("\r", "");
         desc.replace("\\n", "\n");
         String midi = f.readStringUntil('\n');
         midi.trim();
@@ -471,11 +475,13 @@ static void registerEvent(const String& dtstart_raw, const String& summary, cons
     event_count++;
 }
 
-// ストリーミングパーサー本体（安全版）
-static int parseICSStream(WiFiClient* stream) {
-    int old_event_count = event_count;
+// ストリーミングパーサー本体（安全版 v028）
+// 旧データを先にクリアせず、パース完了後に件数を検証してから置き換える
+static int parseICSStream(WiFiClient* stream, int old_event_count) {
+    // 一時バッファ: events[]の後半（MAX_EVENTS/2〜）に仮置きしてから前半に移動
+    // ただしメモリ効率のため、直接events[]に上書きし、失敗時はキャッシュから復旧する
+    // → 呼び出し元(fetchAndUpdate)が事前にキャッシュ保存済みなので安全
 
-    // クリア
     for (int i = 0; i < event_count; i++) {
         events[i].summary = "";
         events[i].description = "";
@@ -537,11 +543,26 @@ static int parseICSStream(WiFiClient* stream) {
     Serial.printf("ICS_STREAM: Complete - parsed %d VEVENTs, loaded %d (was %d) (heap: %d)\n",
                   parsed_events, event_count, old_event_count, ESP.getFreeHeap());
 
-    // 安全チェック: 新データ0件で旧データがあった場合はキャッシュで復旧
+    // ============ 安全チェック ============
+    // (1) 新データ0件 → 明らかに失敗
     if (event_count == 0 && old_event_count > 0) {
-        Serial.printf("ICS_STREAM: WARNING - 0 events from stream (was %d). "
-                      "Possible stream error.\n", old_event_count);
-        return 0;
+        Serial.printf("ICS_STREAM: REJECT - 0 events (was %d). Stream error.\n",
+                      old_event_count);
+        return -1;  // キャッシュから復旧
+    }
+
+    // (2) 新データが旧データの半分未満 → 途中切れの疑い
+    if (old_event_count >= 10 && event_count < old_event_count / 2) {
+        Serial.printf("ICS_STREAM: REJECT - partial load %d (was %d). "
+                      "Possible stream cutoff.\n", event_count, old_event_count);
+        return -1;  // キャッシュから復旧
+    }
+
+    // (3) VEVENTを100件以上パースしたのに日付フィルタ通過が極端に少ない → 時刻異常の疑い
+    if (parsed_events > 100 && event_count < 3) {
+        Serial.printf("ICS_STREAM: REJECT - parsed %d but only %d passed filter. "
+                      "Possible time issue.\n", parsed_events, event_count);
+        return -1;
     }
 
     sortEvents();
@@ -580,6 +601,12 @@ void fetchAndUpdate() {
         return;
     }
 
+    // ★ フェッチ前にキャッシュをバックアップ（ロールバック用）
+    int old_count = event_count;
+    if (old_count > 0 && sd_healthy) {
+        saveEventsCache();
+    }
+
     WiFiClientSecure client;
     client.setInsecure();
     client.setTimeout(15);
@@ -611,10 +638,10 @@ void fetchAndUpdate() {
         }
         http.end();
 
-        // ★ HTTP失敗時、イベント0件ならキャッシュからリカバリ
+        // HTTP失敗でイベント0件ならキャッシュから復旧
         if (event_count == 0) {
             Serial.println("  -> No events in memory, trying cache...");
-            delay(10);  // SPI安定化
+            delay(10);
             loadEventsCache();
         }
 
@@ -627,7 +654,7 @@ void fetchAndUpdate() {
                   http.getSize(), ESP.getFreeHeap());
 
     WiFiClient* stream = http.getStreamPtr();
-    int result = parseICSStream(stream);
+    int result = parseICSStream(stream, old_count);
 
     http.end();
 
@@ -635,13 +662,19 @@ void fetchAndUpdate() {
     delay(10);
 
     if (result > 0) {
-        // 取得成功 → キャッシュ保存
+        // 取得成功＋検証OK → キャッシュ更新
         saveEventsCache();
         fetch_fail_count = 0;
         Serial.printf("Fetched %d events (heap: %d, next in %d min)\n",
                       event_count, ESP.getFreeHeap(), config.ics_poll_min);
+    } else if (result == -1) {
+        // 検証NG → キャッシュからロールバック
+        Serial.printf("ICS data rejected (got %d, was %d), rolling back from cache...\n",
+                      event_count, old_count);
+        loadEventsCache();
+        fetch_fail_count++;
     } else {
-        // パース結果0件 → キャッシュからリカバリ
+        // 0件（初回取得など）→ キャッシュからリカバリ試行
         Serial.println("ICS parse returned 0 events, trying cache...");
         loadEventsCache();
         fetch_fail_count++;

@@ -3,6 +3,7 @@
 #include <ArduinoJson.h>
 
 void loadConfig() {
+    waitEPDReady();
     // デフォルト値（初回起動用）
     strcpy(config.wifi_ssid, "your_wifi_ssid");
     strcpy(config.wifi_pass, "your_wifi_password");
@@ -75,6 +76,7 @@ void loadConfig() {
 }
 
 void saveConfig() {
+    waitEPDReady();
     StaticJsonDocument<1280> doc;
     doc["wifi_ssid"] = config.wifi_ssid;
     doc["wifi_pass"] = config.wifi_pass;

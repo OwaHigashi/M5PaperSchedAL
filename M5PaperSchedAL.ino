@@ -53,21 +53,22 @@ void setup() {
     pinMode(SW_R_PIN, INPUT_PULLUP);
     pinMode(SW_P_PIN, INPUT_PULLUP);
 
-    // SD初期化（CMD0リセット付き）
+    // SD初期化
     delay(100);
     if (!initSD()) {
         Serial.println("SD init failed! Waiting for user action...");
         canvas.createCanvas(540, 960);
-        canvas.setTextSize(26);
+        canvas.setTextSize(3);  // デフォルトフォント用サイズ
+        canvas.setTextColor(15);
         canvas.drawString("SD Card Error!", 10, 100);
-        canvas.drawString("SDカードを抜き差しして", 10, 160);
-        canvas.drawString("Pボタンでリトライ", 10, 200);
-        canvas.pushCanvas(0, 0, UPDATE_MODE_DU4);
+        canvas.drawString("Remove & reinsert SD card", 10, 150);
+        canvas.drawString("Then press P button", 10, 200);
+        canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
 
-        // Pボタン押下でリトライ（無限ループではなく脱出可能）
+        // Pボタン押下でリトライ
         while (true) {
             if (digitalRead(SW_P_PIN) == LOW) {
-                delay(50);  // デバウンス
+                delay(50);
                 Serial.println("Retrying SD init...");
                 if (initSD()) {
                     Serial.println("SD recovered!");
@@ -75,10 +76,10 @@ void setup() {
                 }
                 canvas.fillCanvas(0);
                 canvas.drawString("SD still failed...", 10, 100);
-                canvas.drawString("SDカードを抜き差しして", 10, 160);
-                canvas.drawString("Pボタンでリトライ", 10, 200);
-                canvas.pushCanvas(0, 0, UPDATE_MODE_DU4);
-                delay(500);  // ボタンリリース待ち
+                canvas.drawString("Remove & reinsert SD card", 10, 150);
+                canvas.drawString("Then press P button", 10, 200);
+                canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+                delay(500);
             }
             delay(50);
         }
@@ -93,6 +94,7 @@ void setup() {
     canvas.setTextDatum(TL_DATUM);
 
     // フォント読み込み
+    waitEPDReady();
     if (SD.exists(FONT_PATH)) {
         canvas.loadFont(FONT_PATH, SD);
         canvas.createRender(64, 256);
@@ -252,7 +254,9 @@ void loop() {
                     if (!connectWiFi()) { last_fetch = now; fetch_fail_count++; }
                 }
                 if (WiFi.status() == WL_CONNECTED) {
+                    int before = event_count;
                     fetchAndUpdate();
+                    Serial.printf("Periodic fetch: %d -> %d events\n", before, event_count);
                     if (ui_state == UI_LIST) { scrollToToday(); drawList(); }
                 }
             }

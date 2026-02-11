@@ -67,6 +67,8 @@ void sendNtfyNotification(const String& title, const String& message) {
 }
 
 bool downloadMidi(const String& filename, String& localPath) {
+    waitEPDReady();
+
     if (strlen(config.midi_url) == 0) {
         Serial.println("midi_url not configured");
         return false;
