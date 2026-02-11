@@ -89,7 +89,7 @@ private:
 // Implementation
 //==============================================================================
 
-SimpleMIDIPlayer::SimpleMIDIPlayer() {
+inline SimpleMIDIPlayer::SimpleMIDIPlayer() {
     _playing = false;
     _paused = false;
     _eof = true;
@@ -102,11 +102,11 @@ SimpleMIDIPlayer::SimpleMIDIPlayer() {
     _activeTrackCount = 0;
 }
 
-SimpleMIDIPlayer::~SimpleMIDIPlayer() {
+inline SimpleMIDIPlayer::~SimpleMIDIPlayer() {
     close();
 }
 
-bool SimpleMIDIPlayer::load(const char* filename) {
+inline bool SimpleMIDIPlayer::load(const char* filename) {
     close();
     
     _file = SD.open(filename, FILE_READ);
@@ -145,7 +145,7 @@ bool SimpleMIDIPlayer::load(const char* filename) {
     return true;
 }
 
-void SimpleMIDIPlayer::close() {
+inline void SimpleMIDIPlayer::close() {
     if (_file) {
         _file.close();
     }
@@ -155,7 +155,7 @@ void SimpleMIDIPlayer::close() {
     _activeTrackCount = 0;
 }
 
-void SimpleMIDIPlayer::play() {
+inline void SimpleMIDIPlayer::play() {
     if (!_eof && _activeTrackCount > 0) {
         _playing = true;
         _paused = false;
@@ -163,31 +163,31 @@ void SimpleMIDIPlayer::play() {
     }
 }
 
-void SimpleMIDIPlayer::stop() {
+inline void SimpleMIDIPlayer::stop() {
     _playing = false;
     _paused = false;
 }
 
-void SimpleMIDIPlayer::pause() {
+inline void SimpleMIDIPlayer::pause() {
     _paused = true;
 }
 
-void SimpleMIDIPlayer::resume() {
+inline void SimpleMIDIPlayer::resume() {
     if (_paused) {
         _paused = false;
         _lastUpdateMicros = micros();
     }
 }
 
-bool SimpleMIDIPlayer::isPlaying() {
+inline bool SimpleMIDIPlayer::isPlaying() {
     return _playing && !_paused;
 }
 
-bool SimpleMIDIPlayer::isEOF() {
+inline bool SimpleMIDIPlayer::isEOF() {
     return _eof;
 }
 
-bool SimpleMIDIPlayer::update() {
+inline bool SimpleMIDIPlayer::update() {
     if (!_playing || _paused || _eof) {
         return _playing;
     }
@@ -235,7 +235,7 @@ bool SimpleMIDIPlayer::update() {
     return _playing;
 }
 
-bool SimpleMIDIPlayer::parseHeader() {
+inline bool SimpleMIDIPlayer::parseHeader() {
     uint8_t buf[14];
     
     _file.seek(0);
@@ -278,7 +278,7 @@ bool SimpleMIDIPlayer::parseHeader() {
     return true;
 }
 
-bool SimpleMIDIPlayer::parseTrackHeader(int trackIdx) {
+inline bool SimpleMIDIPlayer::parseTrackHeader(int trackIdx) {
     // Find track start position
     uint32_t pos = 14;  // After header
     
@@ -320,7 +320,7 @@ bool SimpleMIDIPlayer::parseTrackHeader(int trackIdx) {
     return true;
 }
 
-uint32_t SimpleMIDIPlayer::readVarLen(uint32_t& offset) {
+inline uint32_t SimpleMIDIPlayer::readVarLen(uint32_t& offset) {
     uint32_t value = 0;
     uint8_t b;
     
@@ -336,7 +336,7 @@ uint32_t SimpleMIDIPlayer::readVarLen(uint32_t& offset) {
     return value;
 }
 
-uint8_t SimpleMIDIPlayer::readByte(uint32_t& offset) {
+inline uint8_t SimpleMIDIPlayer::readByte(uint32_t& offset) {
     uint8_t b = 0;
     _file.seek(offset);
     _file.read(&b, 1);
@@ -344,12 +344,12 @@ uint8_t SimpleMIDIPlayer::readByte(uint32_t& offset) {
     return b;
 }
 
-void SimpleMIDIPlayer::updateTickDuration() {
+inline void SimpleMIDIPlayer::updateTickDuration() {
     // microseconds per tick = tempo / ticksPerQuarter
     _tickDurationMicros = (float)_tempo / (float)_ticksPerQuarter;
 }
 
-int SimpleMIDIPlayer::findNextTrack() {
+inline int SimpleMIDIPlayer::findNextTrack() {
     int next = -1;
     uint32_t minTick = 0xFFFFFFFF;
     
@@ -363,7 +363,7 @@ int SimpleMIDIPlayer::findNextTrack() {
     return next;
 }
 
-void SimpleMIDIPlayer::processTrackEvent(int trackIdx) {
+inline void SimpleMIDIPlayer::processTrackEvent(int trackIdx) {
     TrackState& track = _tracks[trackIdx];
     
     if (track.offset >= track.endOffset) {
