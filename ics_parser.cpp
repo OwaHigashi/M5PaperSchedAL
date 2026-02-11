@@ -3,6 +3,7 @@
 #include <HTTPClient.h>
 #include <base64.h>
 #include <time.h>
+#include <SD.h>
 
 //==============================================================================
 // 日時パース
@@ -214,6 +215,151 @@ void trimEventsAroundToday(int maxEvents) {
 }
 
 //==============================================================================
+// イベントキャッシュ（SD保存/読込）
+//==============================================================================
+
+// キャッシュ保存 — 取得成功時にSDへ書き出し
+void saveEventsCache() {
+    if (event_count <= 0 || !sd_healthy) return;
+
+    if (!SD.exists("/cache")) SD.mkdir("/cache");
+
+    File f = SD.open(EVENTS_CACHE_FILE, FILE_WRITE);
+    if (!f) {
+        Serial.println("CACHE: Failed to open for write");
+        return;
+    }
+
+    f.printf("V1\n%d\n", event_count);
+    for (int i = 0; i < event_count; i++) {
+        // メタデータ行: start|allday|alarm|offset|alarm_time|triggered|dur|rep|midi_url
+        f.printf("%ld|%d|%d|%d|%ld|%d|%d|%d|%d\n",
+                 (long)events[i].start,
+                 events[i].is_allday ? 1 : 0,
+                 events[i].has_alarm ? 1 : 0,
+                 events[i].offset_min,
+                 (long)events[i].alarm_time,
+                 events[i].triggered ? 1 : 0,
+                 events[i].play_duration_sec,
+                 events[i].play_repeat,
+                 events[i].midi_is_url ? 1 : 0);
+        // summary（改行→\nエスケープ）
+        String s = events[i].summary;
+        s.replace("\n", "\\n"); s.replace("\r", "");
+        f.println(s);
+        // description
+        String d = events[i].description;
+        d.replace("\n", "\\n"); d.replace("\r", "");
+        f.println(d);
+        // midi_file
+        f.println(events[i].midi_file);
+    }
+    f.flush();
+    f.close();
+    Serial.printf("CACHE: Saved %d events to SD\n", event_count);
+}
+
+// キャッシュ読込 — HTTP失敗時やコールドスタート時
+bool loadEventsCache() {
+    if (!sd_healthy) return false;
+    if (!SD.exists(EVENTS_CACHE_FILE)) {
+        Serial.println("CACHE: No cache file");
+        return false;
+    }
+
+    File f = SD.open(EVENTS_CACHE_FILE, FILE_READ);
+    if (!f) {
+        Serial.println("CACHE: Failed to open for read");
+        return false;
+    }
+
+    String header = f.readStringUntil('\n');
+    header.trim();
+    if (header != "V1") {
+        Serial.printf("CACHE: Invalid header '%s'\n", header.c_str());
+        f.close();
+        return false;
+    }
+
+    String countStr = f.readStringUntil('\n');
+    countStr.trim();
+    int cached_count = countStr.toInt();
+    if (cached_count <= 0 || cached_count > MAX_EVENTS) {
+        Serial.printf("CACHE: Invalid count %d\n", cached_count);
+        f.close();
+        return false;
+    }
+
+    // 現在のイベントをクリア
+    for (int i = 0; i < event_count; i++) {
+        events[i].summary = "";
+        events[i].description = "";
+        events[i].midi_file = "";
+    }
+    event_count = 0;
+
+    time_t now = time(nullptr);
+    const time_t ALARM_GRACE_SEC = 600;
+
+    for (int i = 0; i < cached_count; i++) {
+        if (!f.available()) break;
+
+        // メタデータ行
+        String meta = f.readStringUntil('\n');
+        meta.trim();
+        if (meta.length() == 0) break;
+
+        long v_start = 0, v_alarm_time = 0;
+        int v_allday = 0, v_alarm = 0, v_offset = 0, v_triggered = 0;
+        int v_dur = -1, v_rep = -1, v_midi_url = 0;
+
+        int fields = sscanf(meta.c_str(), "%ld|%d|%d|%d|%ld|%d|%d|%d|%d",
+                            &v_start, &v_allday, &v_alarm, &v_offset,
+                            &v_alarm_time, &v_triggered, &v_dur, &v_rep, &v_midi_url);
+
+        String summary = f.readStringUntil('\n');
+        summary.replace("\\n", "\n");
+        String desc = f.readStringUntil('\n');
+        desc.replace("\\n", "\n");
+        String midi = f.readStringUntil('\n');
+        midi.trim();
+
+        if (fields < 9) continue;
+
+        // 1日以上前のイベントをスキップ
+        if ((time_t)v_start <= now - 86400) continue;
+
+        int idx = event_count;
+        events[idx].start = (time_t)v_start;
+        events[idx].is_allday = (v_allday != 0);
+        events[idx].has_alarm = (v_alarm != 0);
+        events[idx].offset_min = v_offset;
+        events[idx].alarm_time = (time_t)v_alarm_time;
+        events[idx].play_duration_sec = v_dur;
+        events[idx].play_repeat = v_rep;
+        events[idx].midi_is_url = (v_midi_url != 0);
+        events[idx].summary = summary;
+        events[idx].description = desc;
+        events[idx].midi_file = midi;
+
+        // triggered状態を再計算
+        if (events[idx].has_alarm) {
+            events[idx].triggered = (events[idx].alarm_time < now - ALARM_GRACE_SEC);
+        } else {
+            events[idx].triggered = false;
+        }
+
+        event_count++;
+        if (event_count >= MAX_EVENTS) break;
+    }
+
+    f.close();
+    Serial.printf("CACHE: Loaded %d events from SD (heap: %d)\n",
+                  event_count, ESP.getFreeHeap());
+    return event_count > 0;
+}
+
+//==============================================================================
 // ストリーミングICSパーサー
 //==============================================================================
 
@@ -325,8 +471,11 @@ static void registerEvent(const String& dtstart_raw, const String& summary, cons
     event_count++;
 }
 
-// ストリーミングパーサー本体
-static void parseICSStream(WiFiClient* stream) {
+// ストリーミングパーサー本体（安全版）
+static int parseICSStream(WiFiClient* stream) {
+    int old_event_count = event_count;
+
+    // クリア
     for (int i = 0; i < event_count; i++) {
         events[i].summary = "";
         events[i].description = "";
@@ -385,10 +534,19 @@ static void parseICSStream(WiFiClient* stream) {
         }
     }
 
-    Serial.printf("ICS_STREAM: Complete - parsed %d, loaded %d (heap: %d)\n",
-                  parsed_events, event_count, ESP.getFreeHeap());
+    Serial.printf("ICS_STREAM: Complete - parsed %d VEVENTs, loaded %d (was %d) (heap: %d)\n",
+                  parsed_events, event_count, old_event_count, ESP.getFreeHeap());
+
+    // 安全チェック: 新データ0件で旧データがあった場合はキャッシュで復旧
+    if (event_count == 0 && old_event_count > 0) {
+        Serial.printf("ICS_STREAM: WARNING - 0 events from stream (was %d). "
+                      "Possible stream error.\n", old_event_count);
+        return 0;
+    }
+
     sortEvents();
     trimEventsAroundToday(config.max_events);
+    return event_count;
 }
 
 //==============================================================================
@@ -396,6 +554,13 @@ static void parseICSStream(WiFiClient* stream) {
 //==============================================================================
 void fetchAndUpdate() {
     Serial.printf("Fetching ICS... (heap: %d)\n", ESP.getFreeHeap());
+
+    // 時刻未同期チェック（NTP未反映だと日付フィルタで全件却下される）
+    time_t now_check = time(nullptr);
+    if (now_check < 1700000000) {
+        Serial.printf("SKIP ICS fetch - time not synced yet (%ld)\n", now_check);
+        return;
+    }
 
     if (strlen(config.ics_url) == 0) {
         Serial.println("ICS URL not configured");
@@ -439,7 +604,20 @@ void fetchAndUpdate() {
     int code = http.GET();
     if (code != HTTP_CODE_OK) {
         Serial.printf("HTTP GET failed: %d (WiFi:%d)\n", code, WiFi.status());
+        Serial.printf("  URL: %.60s...\n", config.ics_url);
+        Serial.printf("  heap: %d\n", ESP.getFreeHeap());
+        if (code == -1) {
+            Serial.println("  -> Connection refused/timeout (SSL/DNS issue)");
+        }
         http.end();
+
+        // ★ HTTP失敗時、イベント0件ならキャッシュからリカバリ
+        if (event_count == 0) {
+            Serial.println("  -> No events in memory, trying cache...");
+            delay(10);  // SPI安定化
+            loadEventsCache();
+        }
+
         last_fetch = time(nullptr);
         fetch_fail_count++;
         return;
@@ -449,13 +627,27 @@ void fetchAndUpdate() {
                   http.getSize(), ESP.getFreeHeap());
 
     WiFiClient* stream = http.getStreamPtr();
-    parseICSStream(stream);
+    int result = parseICSStream(stream);
 
     http.end();
-    Serial.printf("HTTP closed, heap: %d\n", ESP.getFreeHeap());
 
+    // ★ ネットワーク終了後、SD操作前にSPI安定化delay
+    delay(10);
+
+    if (result > 0) {
+        // 取得成功 → キャッシュ保存
+        saveEventsCache();
+        fetch_fail_count = 0;
+        Serial.printf("Fetched %d events (heap: %d, next in %d min)\n",
+                      event_count, ESP.getFreeHeap(), config.ics_poll_min);
+    } else {
+        // パース結果0件 → キャッシュからリカバリ
+        Serial.println("ICS parse returned 0 events, trying cache...");
+        loadEventsCache();
+        fetch_fail_count++;
+    }
+
+    Serial.printf("fetchAndUpdate done: %d events, heap: %d\n",
+                  event_count, ESP.getFreeHeap());
     last_fetch = time(nullptr);
-    fetch_fail_count = 0;
-    Serial.printf("Fetched %d events (heap: %d, next in %d min)\n",
-                  event_count, ESP.getFreeHeap(), config.ics_poll_min);
 }

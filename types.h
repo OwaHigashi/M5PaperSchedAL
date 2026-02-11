@@ -25,6 +25,7 @@
 #define MIDI_DIR                "/midi"
 #define MIDI_DL_DIR             "/midi-dl"
 #define FONT_PATH               "/fonts/ipaexg.ttf"
+#define EVENTS_CACHE_FILE       "/cache/events.txt"
 #define TZ_JST                  "JST-9"
 
 #define MAX_EVENTS              100
