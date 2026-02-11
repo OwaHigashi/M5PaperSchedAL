@@ -203,6 +203,7 @@ void handleSettingsSelect() {
         case SET_SOUND_TEST: {
             Serial.println("\n*** SOUND TEST ***");
             Serial.printf("  MIDI: %s\n", config.midi_file);
+            waitEPDReady();
             Serial.printf("  Exists: %s\n", SD.exists(config.midi_file) ? "YES" : "NO");
             Serial.printf("  Heap: %d\n", ESP.getFreeHeap());
             if (!SD.exists(config.midi_file)) {

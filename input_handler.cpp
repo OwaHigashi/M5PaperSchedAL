@@ -299,6 +299,7 @@ void checkAlarms() {
                           dur == 0 ? "1song" : (String(dur) + "sec").c_str(), play_repeat_remaining);
 
             String midiPath = getMidiPath(i);
+            waitEPDReady();
             Serial.printf("  MIDI: %s (exists:%s)\n", midiPath.c_str(), SD.exists(midiPath.c_str()) ? "Y" : "N");
 
             play_start_ms = millis();
