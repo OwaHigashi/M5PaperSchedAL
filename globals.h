@@ -127,8 +127,6 @@ bool parseAlarmMarker(const String& s_raw, bool is_summary, int& off, bool& foun
 void sortEvents();
 void trimEventsAroundToday(int maxEvents);
 void fetchAndUpdate();
-void saveEventsCache();
-bool loadEventsCache();
 
 // ui_common.cpp
 void drawText(const String& s, int x, int y);

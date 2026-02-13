@@ -3,7 +3,6 @@
 #include <HTTPClient.h>
 #include <base64.h>
 #include <time.h>
-#include <SD.h>
 
 //==============================================================================
 // 日時パース
@@ -215,155 +214,6 @@ void trimEventsAroundToday(int maxEvents) {
 }
 
 //==============================================================================
-// イベントキャッシュ（SD保存/読込）
-//==============================================================================
-
-// キャッシュ保存 — 取得成功時にSDへ書き出し
-void saveEventsCache() {
-    if (event_count <= 0 || !sd_healthy) return;
-    waitEPDReady();
-
-    if (!SD.exists("/cache")) SD.mkdir("/cache");
-
-    File f = SD.open(EVENTS_CACHE_FILE, FILE_WRITE);
-    if (!f) {
-        Serial.println("CACHE: Failed to open for write");
-        return;
-    }
-
-    f.printf("V1\n%d\n", event_count);
-    for (int i = 0; i < event_count; i++) {
-        // メタデータ行: start|allday|alarm|offset|alarm_time|triggered|dur|rep|midi_url
-        f.printf("%ld|%d|%d|%d|%ld|%d|%d|%d|%d\n",
-                 (long)events[i].start,
-                 events[i].is_allday ? 1 : 0,
-                 events[i].has_alarm ? 1 : 0,
-                 events[i].offset_min,
-                 (long)events[i].alarm_time,
-                 events[i].triggered ? 1 : 0,
-                 events[i].play_duration_sec,
-                 events[i].play_repeat,
-                 events[i].midi_is_url ? 1 : 0);
-        // summary（改行→\nエスケープ）
-        String s = events[i].summary;
-        s.replace("\r", ""); s.replace("\n", "\\n");
-        f.print(s); f.print('\n');
-        // description
-        String d = events[i].description;
-        d.replace("\r", ""); d.replace("\n", "\\n");
-        f.print(d); f.print('\n');
-        // midi_file
-        f.print(events[i].midi_file); f.print('\n');
-    }
-    f.flush();
-    f.close();
-    Serial.printf("CACHE: Saved %d events to SD\n", event_count);
-}
-
-// キャッシュ読込 — HTTP失敗時やコールドスタート時
-bool loadEventsCache() {
-    if (!sd_healthy) return false;
-    waitEPDReady();
-    if (!SD.exists(EVENTS_CACHE_FILE)) {
-        Serial.println("CACHE: No cache file");
-        return false;
-    }
-
-    File f = SD.open(EVENTS_CACHE_FILE, FILE_READ);
-    if (!f) {
-        Serial.println("CACHE: Failed to open for read");
-        return false;
-    }
-
-    String header = f.readStringUntil('\n');
-    header.trim();
-    if (header != "V1") {
-        Serial.printf("CACHE: Invalid header '%s'\n", header.c_str());
-        f.close();
-        return false;
-    }
-
-    String countStr = f.readStringUntil('\n');
-    countStr.trim();
-    int cached_count = countStr.toInt();
-    if (cached_count <= 0 || cached_count > MAX_EVENTS) {
-        Serial.printf("CACHE: Invalid count %d\n", cached_count);
-        f.close();
-        return false;
-    }
-
-    // 現在のイベントをクリア
-    for (int i = 0; i < event_count; i++) {
-        events[i].summary = "";
-        events[i].description = "";
-        events[i].midi_file = "";
-    }
-    event_count = 0;
-
-    time_t now = time(nullptr);
-    const time_t ALARM_GRACE_SEC = 600;
-
-    for (int i = 0; i < cached_count; i++) {
-        if (!f.available()) break;
-
-        // メタデータ行
-        String meta = f.readStringUntil('\n');
-        meta.trim();
-        if (meta.length() == 0) break;
-
-        long v_start = 0, v_alarm_time = 0;
-        int v_allday = 0, v_alarm = 0, v_offset = 0, v_triggered = 0;
-        int v_dur = -1, v_rep = -1, v_midi_url = 0;
-
-        int fields = sscanf(meta.c_str(), "%ld|%d|%d|%d|%ld|%d|%d|%d|%d",
-                            &v_start, &v_allday, &v_alarm, &v_offset,
-                            &v_alarm_time, &v_triggered, &v_dur, &v_rep, &v_midi_url);
-
-        String summary = f.readStringUntil('\n');
-        summary.replace("\r", "");
-        summary.replace("\\n", "\n");
-        String desc = f.readStringUntil('\n');
-        desc.replace("\r", "");
-        desc.replace("\\n", "\n");
-        String midi = f.readStringUntil('\n');
-        midi.trim();
-
-        if (fields < 9) continue;
-
-        // 1日以上前のイベントをスキップ
-        if ((time_t)v_start <= now - 86400) continue;
-
-        int idx = event_count;
-        events[idx].start = (time_t)v_start;
-        events[idx].is_allday = (v_allday != 0);
-        events[idx].has_alarm = (v_alarm != 0);
-        events[idx].offset_min = v_offset;
-        events[idx].alarm_time = (time_t)v_alarm_time;
-        events[idx].play_duration_sec = v_dur;
-        events[idx].play_repeat = v_rep;
-        events[idx].midi_is_url = (v_midi_url != 0);
-        events[idx].summary = summary;
-        events[idx].description = desc;
-        events[idx].midi_file = midi;
-
-        // triggered状態を再計算
-        if (events[idx].has_alarm) {
-            events[idx].triggered = (events[idx].alarm_time < now - ALARM_GRACE_SEC);
-        } else {
-            events[idx].triggered = false;
-        }
-
-        event_count++;
-        if (event_count >= MAX_EVENTS) break;
-    }
-
-    f.close();
-    Serial.printf("CACHE: Loaded %d events from SD (heap: %d)\n",
-                  event_count, ESP.getFreeHeap());
-    return event_count > 0;
-}
-
-//==============================================================================
 // ストリーミングICSパーサー
 //==============================================================================
 
@@ -475,13 +325,8 @@ static void registerEvent(const String& dtstart_raw, const String& summary, cons
     event_count++;
 }
 
-// ストリーミングパーサー本体（安全版 v028）
-// 旧データを先にクリアせず、パース完了後に件数を検証してから置き換える
+// ストリーミングパーサー本体
 static int parseICSStream(WiFiClient* stream, int old_event_count) {
-    // 一時バッファ: events[]の後半（MAX_EVENTS/2〜）に仮置きしてから前半に移動
-    // ただしメモリ効率のため、直接events[]に上書きし、失敗時はキャッシュから復旧する
-    // → 呼び出し元(fetchAndUpdate)が事前にキャッシュ保存済みなので安全
-
     for (int i = 0; i < event_count; i++) {
         events[i].summary = "";
         events[i].description = "";
@@ -543,26 +388,8 @@ static int parseICSStream(WiFiClient* stream, int old_event_count) {
     Serial.printf("ICS_STREAM: Complete - parsed %d VEVENTs, loaded %d (was %d) (heap: %d)\n",
                   parsed_events, event_count, old_event_count, ESP.getFreeHeap());
 
-    // ============ 安全チェック ============
-    // (1) 新データ0件 → 明らかに失敗
     if (event_count == 0 && old_event_count > 0) {
-        Serial.printf("ICS_STREAM: REJECT - 0 events (was %d). Stream error.\n",
-                      old_event_count);
-        return -1;  // キャッシュから復旧
-    }
-
-    // (2) 新データが旧データの半分未満 → 途中切れの疑い
-    if (old_event_count >= 10 && event_count < old_event_count / 2) {
-        Serial.printf("ICS_STREAM: REJECT - partial load %d (was %d). "
-                      "Possible stream cutoff.\n", event_count, old_event_count);
-        return -1;  // キャッシュから復旧
-    }
-
-    // (3) VEVENTを100件以上パースしたのに日付フィルタ通過が極端に少ない → 時刻異常の疑い
-    if (parsed_events > 100 && event_count < 3) {
-        Serial.printf("ICS_STREAM: REJECT - parsed %d but only %d passed filter. "
-                      "Possible time issue.\n", parsed_events, event_count);
-        return -1;
+        Serial.printf("ICS_STREAM: WARNING - 0 events (was %d), will retry\n", old_event_count);
     }
 
     sortEvents();
@@ -576,7 +403,7 @@ static int parseICSStream(WiFiClient* stream, int old_event_count) {
 void fetchAndUpdate() {
     Serial.printf("Fetching ICS... (heap: %d)\n", ESP.getFreeHeap());
 
-    // 時刻未同期チェック（NTP未反映だと日付フィルタで全件却下される）
+    // 時刻未同期チェック
     time_t now_check = time(nullptr);
     if (now_check < 1700000000) {
         Serial.printf("SKIP ICS fetch - time not synced yet (%ld)\n", now_check);
@@ -601,86 +428,62 @@ void fetchAndUpdate() {
         return;
     }
 
-    // ★ フェッチ前にキャッシュをバックアップ（ロールバック用）
     int old_count = event_count;
-    if (old_count > 0 && sd_healthy) {
-        saveEventsCache();
-    }
 
-    WiFiClientSecure client;
-    client.setInsecure();
-    client.setTimeout(15);
-
-    HTTPClient http;
-    http.setTimeout(15000);
-    http.setConnectTimeout(10000);
-
-    if (!http.begin(client, config.ics_url)) {
-        Serial.println("HTTP begin failed");
-        last_fetch = time(nullptr);
-        fetch_fail_count++;
-        return;
-    }
-
-    if (strlen(config.ics_user) > 0) {
-        String auth = String(config.ics_user) + ":" + String(config.ics_pass);
-        String authHeader = "Basic " + base64::encode(auth);
-        http.addHeader("Authorization", authHeader);
-    }
-
-    int code = http.GET();
-    if (code != HTTP_CODE_OK) {
-        Serial.printf("HTTP GET failed: %d (WiFi:%d)\n", code, WiFi.status());
-        Serial.printf("  URL: %.60s...\n", config.ics_url);
-        Serial.printf("  heap: %d\n", ESP.getFreeHeap());
-        if (code == -1) {
-            Serial.println("  -> Connection refused/timeout (SSL/DNS issue)");
+    // 最大3回リトライ（0件の場合のみ再試行）
+    for (int attempt = 0; attempt < 3; attempt++) {
+        if (attempt > 0) {
+            Serial.printf("ICS retry %d/3 (got 0, was %d)...\n", attempt + 1, old_count);
+            delay(2000);
         }
+
+        WiFiClientSecure client;
+        client.setInsecure();
+        client.setTimeout(15);
+
+        HTTPClient http;
+        http.setTimeout(15000);
+        http.setConnectTimeout(10000);
+
+        if (!http.begin(client, config.ics_url)) {
+            Serial.println("HTTP begin failed");
+            continue;
+        }
+
+        if (strlen(config.ics_user) > 0) {
+            String auth = String(config.ics_user) + ":" + String(config.ics_pass);
+            String authHeader = "Basic " + base64::encode(auth);
+            http.addHeader("Authorization", authHeader);
+        }
+
+        int code = http.GET();
+        if (code != HTTP_CODE_OK) {
+            Serial.printf("HTTP GET failed: %d (WiFi:%d) heap:%d\n",
+                          code, WiFi.status(), ESP.getFreeHeap());
+            http.end();
+            continue;
+        }
+
+        Serial.printf("HTTP OK, content-length: %d, heap: %d\n",
+                      http.getSize(), ESP.getFreeHeap());
+
+        WiFiClient* stream = http.getStreamPtr();
+        int result = parseICSStream(stream, old_count);
+
         http.end();
 
-        // HTTP失敗でイベント0件ならキャッシュから復旧
-        if (event_count == 0) {
-            Serial.println("  -> No events in memory, trying cache...");
-            delay(10);
-            loadEventsCache();
+        if (result > 0) {
+            fetch_fail_count = 0;
+            Serial.printf("Fetched %d events (heap: %d, next in %d min)\n",
+                          event_count, ESP.getFreeHeap(), config.ics_poll_min);
+            last_fetch = time(nullptr);
+            return;  // 成功、終了
         }
-
-        last_fetch = time(nullptr);
-        fetch_fail_count++;
-        return;
     }
 
-    Serial.printf("HTTP OK, content-length: %d, heap: %d\n",
-                  http.getSize(), ESP.getFreeHeap());
-
-    WiFiClient* stream = http.getStreamPtr();
-    int result = parseICSStream(stream, old_count);
-
-    http.end();
-
-    // ★ ネットワーク終了後、SD操作前にSPI安定化delay
-    delay(10);
-
-    if (result > 0) {
-        // 取得成功＋検証OK → キャッシュ更新
-        saveEventsCache();
-        fetch_fail_count = 0;
-        Serial.printf("Fetched %d events (heap: %d, next in %d min)\n",
-                      event_count, ESP.getFreeHeap(), config.ics_poll_min);
-    } else if (result == -1) {
-        // 検証NG → キャッシュからロールバック
-        Serial.printf("ICS data rejected (got %d, was %d), rolling back from cache...\n",
-                      event_count, old_count);
-        loadEventsCache();
-        fetch_fail_count++;
-    } else {
-        // 0件（初回取得など）→ キャッシュからリカバリ試行
-        Serial.println("ICS parse returned 0 events, trying cache...");
-        loadEventsCache();
-        fetch_fail_count++;
-    }
-
-    Serial.printf("fetchAndUpdate done: %d events, heap: %d\n",
-                  event_count, ESP.getFreeHeap());
+    // 3回リトライしても0件
+    Serial.printf("ICS fetch failed after 3 attempts (was %d, now %d)\n",
+                  old_count, event_count);
+    fetch_fail_count++;
     last_fetch = time(nullptr);
 }

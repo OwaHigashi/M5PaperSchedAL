@@ -126,11 +126,6 @@ void setup() {
     canvas.drawString("Connecting WiFi...", 270, 240);
     canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
 
-    // ★ まずキャッシュからイベント読込（WiFi失敗に備える）
-    if (loadEventsCache()) {
-        Serial.printf("Startup: %d events from cache\n", event_count);
-    }
-
     // WiFi接続
     if (connectWiFi()) {
         configTzTime(TZ_JST, "pool.ntp.org", "time.google.com", "ntp.nict.jp");
@@ -244,7 +239,9 @@ void loop() {
     // 定期ICS更新
     if (ui_state != UI_PLAYING) {
         time_t now = time(nullptr);
-        int poll_interval = (config.ics_poll_min * 60) * (1 + min(fetch_fail_count, 5));
+        // events=0なら30秒間隔で積極リトライ、通常はpoll設定に従う
+        int poll_interval = (event_count == 0) ? 30
+                          : (config.ics_poll_min * 60) * (1 + min(fetch_fail_count, 5));
         if (now != (time_t)-1 && (now - last_fetch) >= poll_interval) {
             if (!sd_healthy) {
                 Serial.println("ICS fetch skipped - SD unhealthy");
