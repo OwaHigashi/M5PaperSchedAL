@@ -271,8 +271,7 @@ static void registerEvent(const String& dtstart_raw, const String& summary, cons
     if (st <= now - 86400 || st >= now + 30 * 86400) return;
 
     if (ESP.getFreeHeap() < (size_t)config.min_free_heap * 1024) {
-        Serial.printf("ICS_STREAM: STOP - heap low (%d < %dKB), %d events loaded\n",
-                      ESP.getFreeHeap(), config.min_free_heap, event_count);
+        // ヒープ不足 → これ以上登録しない（ログは1回だけ）
         return;
     }
 
@@ -325,15 +324,18 @@ static void registerEvent(const String& dtstart_raw, const String& summary, cons
     event_count++;
 }
 
-// ストリーミングパーサー本体
-static int parseICSStream(WiFiClient* stream, int old_event_count) {
+// イベント配列クリア
+static void clearEvents() {
     for (int i = 0; i < event_count; i++) {
         events[i].summary = "";
         events[i].description = "";
         events[i].midi_file = "";
     }
     event_count = 0;
+}
 
+// ストリーミングパーサー本体
+static int parseICSStream(WiFiClient* stream) {
     bool inEvent = false;
     String dtstart_raw, summary, desc;
     String pushback = "";
@@ -385,12 +387,8 @@ static int parseICSStream(WiFiClient* stream, int old_event_count) {
         }
     }
 
-    Serial.printf("ICS_STREAM: Complete - parsed %d VEVENTs, loaded %d (was %d) (heap: %d)\n",
-                  parsed_events, event_count, old_event_count, ESP.getFreeHeap());
-
-    if (event_count == 0 && old_event_count > 0) {
-        Serial.printf("ICS_STREAM: WARNING - 0 events (was %d), will retry\n", old_event_count);
-    }
+    Serial.printf("ICS_STREAM: Complete - parsed %d VEVENTs, loaded %d (heap: %d)\n",
+                  parsed_events, event_count, ESP.getFreeHeap());
 
     sortEvents();
     trimEventsAroundToday(config.max_events);
@@ -400,8 +398,54 @@ static int parseICSStream(WiFiClient* stream, int old_event_count) {
 //==============================================================================
 // ICS取得 + ストリーミング解析
 //==============================================================================
+
+// 1回のHTTP取得+パースを実行。成功した件数を返す。
+static int doFetch() {
+    // ★ SSL接続前にイベントを解放 → 断片化を減らし、SSLに連続メモリを確保
+    clearEvents();
+    Serial.printf("Events cleared, heap: %d\n", ESP.getFreeHeap());
+
+    WiFiClientSecure client;
+    client.setInsecure();
+    client.setTimeout(15);
+
+    HTTPClient http;
+    http.setTimeout(15000);
+    http.setConnectTimeout(10000);
+
+    if (!http.begin(client, config.ics_url)) {
+        Serial.println("HTTP begin failed");
+        return -1;
+    }
+
+    if (strlen(config.ics_user) > 0) {
+        String auth = String(config.ics_user) + ":" + String(config.ics_pass);
+        String authHeader = "Basic " + base64::encode(auth);
+        http.addHeader("Authorization", authHeader);
+    }
+
+    int code = http.GET();
+    if (code != HTTP_CODE_OK) {
+        Serial.printf("HTTP GET failed: %d (WiFi:%d RSSI:%d heap:%d)\n",
+                      code, WiFi.status(), WiFi.RSSI(), ESP.getFreeHeap());
+        http.end();
+        return -1;
+    }
+
+    Serial.printf("HTTP OK, content-length: %d, heap: %d\n",
+                  http.getSize(), ESP.getFreeHeap());
+
+    WiFiClient* stream = http.getStreamPtr();
+    int result = parseICSStream(stream);
+
+    http.end();
+    return result;
+}
+
 void fetchAndUpdate() {
-    Serial.printf("Fetching ICS... (heap: %d)\n", ESP.getFreeHeap());
+    Serial.printf("Fetching ICS... (heap:%d WiFi:%d RSSI:%d fails:%d events:%d)\n",
+                  ESP.getFreeHeap(), WiFi.status(), WiFi.RSSI(),
+                  fetch_fail_count, event_count);
 
     // 時刻未同期チェック
     time_t now_check = time(nullptr);
@@ -428,62 +472,33 @@ void fetchAndUpdate() {
         return;
     }
 
-    int old_count = event_count;
+    int result = doFetch();
 
-    // 最大3回リトライ（0件の場合のみ再試行）
-    for (int attempt = 0; attempt < 3; attempt++) {
-        if (attempt > 0) {
-            Serial.printf("ICS retry %d/3 (got 0, was %d)...\n", attempt + 1, old_count);
-            delay(2000);
-        }
-
-        WiFiClientSecure client;
-        client.setInsecure();
-        client.setTimeout(15);
-
-        HTTPClient http;
-        http.setTimeout(15000);
-        http.setConnectTimeout(10000);
-
-        if (!http.begin(client, config.ics_url)) {
-            Serial.println("HTTP begin failed");
-            continue;
-        }
-
-        if (strlen(config.ics_user) > 0) {
-            String auth = String(config.ics_user) + ":" + String(config.ics_pass);
-            String authHeader = "Basic " + base64::encode(auth);
-            http.addHeader("Authorization", authHeader);
-        }
-
-        int code = http.GET();
-        if (code != HTTP_CODE_OK) {
-            Serial.printf("HTTP GET failed: %d (WiFi:%d) heap:%d\n",
-                          code, WiFi.status(), ESP.getFreeHeap());
-            http.end();
-            continue;
-        }
-
-        Serial.printf("HTTP OK, content-length: %d, heap: %d\n",
-                      http.getSize(), ESP.getFreeHeap());
-
-        WiFiClient* stream = http.getStreamPtr();
-        int result = parseICSStream(stream, old_count);
-
-        http.end();
-
-        if (result > 0) {
-            fetch_fail_count = 0;
-            Serial.printf("Fetched %d events (heap: %d, next in %d min)\n",
-                          event_count, ESP.getFreeHeap(), config.ics_poll_min);
-            last_fetch = time(nullptr);
-            return;  // 成功、終了
-        }
+    if (result > 0) {
+        // 成功
+        fetch_fail_count = 0;
+        Serial.printf("Fetched %d events (heap: %d, next in %d min)\n",
+                      event_count, ESP.getFreeHeap(), config.ics_poll_min);
+        last_fetch = time(nullptr);
+        return;
     }
 
-    // 3回リトライしても0件
-    Serial.printf("ICS fetch failed after 3 attempts (was %d, now %d)\n",
-                  old_count, event_count);
-    fetch_fail_count++;
+    // 失敗 or 0件 → 即リトライ（メモリは解放済みなので成功するはず）
+    Serial.printf("Fetch failed or 0 events, immediate retry (heap: %d)\n",
+                  ESP.getFreeHeap());
+    delay(2000);
+
+    result = doFetch();
+
+    if (result > 0) {
+        fetch_fail_count = 0;
+        Serial.printf("Retry OK: %d events (heap: %d)\n",
+                      event_count, ESP.getFreeHeap());
+    } else {
+        fetch_fail_count++;
+        Serial.printf("Retry also failed, events: %d (heap: %d)\n",
+                      event_count, ESP.getFreeHeap());
+    }
+
     last_fetch = time(nullptr);
 }

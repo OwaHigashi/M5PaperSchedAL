@@ -247,8 +247,13 @@ void loop() {
                 Serial.println("ICS fetch skipped - SD unhealthy");
                 last_fetch = now;
             } else {
-                if (WiFi.status() != WL_CONNECTED) {
-                    if (!connectWiFi()) { last_fetch = now; fetch_fail_count++; }
+                // WiFi未接続、または連続失敗3回以上 → WiFiフルリセット
+                if (WiFi.status() != WL_CONNECTED || fetch_fail_count >= 3) {
+                    if (fetch_fail_count >= 3) {
+                        Serial.printf("WiFi reset (fail_count=%d, RSSI=%d, status=%d)\n",
+                                      fetch_fail_count, WiFi.RSSI(), WiFi.status());
+                    }
+                    connectWiFi();  // disconnect(true) + 再接続
                 }
                 if (WiFi.status() == WL_CONNECTED) {
                     int before = event_count;
