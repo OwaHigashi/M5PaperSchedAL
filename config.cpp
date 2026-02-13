@@ -23,7 +23,7 @@ void loadConfig() {
     config.play_repeat = 1;
     config.max_events = 99;
     config.max_desc_bytes = 500;
-    config.min_free_heap = 80;
+    config.min_free_heap = 40;
 
     if (!SD.exists(CONFIG_FILE)) {
         Serial.println("Config not found, using defaults");
@@ -70,7 +70,7 @@ void loadConfig() {
     if (config.max_events < 10) config.max_events = 10;
     if (config.max_events > MAX_EVENTS - 1) config.max_events = MAX_EVENTS - 1;
     if (config.max_desc_bytes < 100) config.max_desc_bytes = 100;
-    if (config.min_free_heap < 40) config.min_free_heap = 40;
+    if (config.min_free_heap < 20) config.min_free_heap = 20;
 
     Serial.println("Config loaded");
 }
