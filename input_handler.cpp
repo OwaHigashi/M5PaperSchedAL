@@ -266,7 +266,8 @@ void checkAlarms() {
                 Serial.printf("      midi:%s (%s)\n", events[i].midi_file.c_str(), events[i].midi_is_url ? "URL" : "SD");
         }
         if (pending == 0) Serial.println("  (no pending alarms)");
-        Serial.printf("=== events:%d, pending:%d, heap:%d ===\n\n", event_count, pending, ESP.getFreeHeap());
+        Serial.printf("=== events:%d, pending:%d, heap:%d, WiFi:%d, fails:%d ===\n\n",
+                      event_count, pending, ESP.getFreeHeap(), WiFi.RSSI(), fetch_fail_count);
     }
 
     // アラーム発火チェック
