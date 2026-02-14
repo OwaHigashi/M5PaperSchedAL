@@ -27,7 +27,7 @@
 #define FONT_PATH               "/fonts/ipaexg.ttf"
 #define TZ_JST                  "JST-9"
 
-#define MAX_EVENTS              100
+#define MAX_EVENTS              300
 #define ITEMS_PER_PAGE          12
 #define SD_CHECK_INTERVAL_MS    300000  // 5分
 #define MIN_HEAP_FOR_FETCH      60000   // ICSフェッチ前の最低ヒープ(byte)
@@ -64,15 +64,19 @@ struct EventItem {
     time_t start;
     time_t alarm_time;
     int offset_min;
-    String summary;
-    String description;
-    String midi_file;
+    char text[4000];            // summary \0 description \0
+    char midi_file[64];
     bool midi_is_url;
     bool has_alarm;
     bool triggered;
     bool is_allday;
     int play_duration_sec;      // 0=1曲 -1=設定値使用
     int play_repeat;            // -1=設定値使用
+
+    // summary = text先頭（最初の\0まで）
+    const char* summary() const { return text; }
+    // description = summary\0の次から
+    const char* description() const { return text + strlen(text) + 1; }
 };
 
 struct ButtonArea {

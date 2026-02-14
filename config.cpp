@@ -21,8 +21,8 @@ void loadConfig() {
     config.ics_poll_min = 30;
     config.play_duration = 0;  // 0=1曲
     config.play_repeat = 1;
-    config.max_events = 99;
-    config.max_desc_bytes = 500;
+    config.max_events = 299;
+    config.max_desc_bytes = 3500;
     config.min_free_heap = 40;
 
     if (!SD.exists(CONFIG_FILE)) {

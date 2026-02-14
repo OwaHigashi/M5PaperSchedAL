@@ -46,7 +46,7 @@ String getMidiPath(int eventIdx) {
 
     EventItem& e = events[eventIdx];
 
-    if (e.midi_file.length() == 0) {
+    if (e.midi_file[0] == '\0') {
         return config.midi_file;
     }
 
@@ -114,6 +114,13 @@ void finishAlarm() {
     ui_state = UI_LIST;
     scrollToToday();
     drawList();
+
+    // アラーム待ちで延期されたリブートを実行
+    if (reboot_pending) {
+        Serial.println("*** REBOOT: deferred reboot after alarm ***");
+        delay(100);
+        ESP.restart();
+    }
 }
 
 void updateMidiPlayback() {

@@ -39,7 +39,7 @@ void drawDetail(int idx) {
 
         canvas.setTextSize(18);
         String extraInfo = "";
-        if (e.midi_file.length() > 0) {
+        if (strlen(e.midi_file) > 0) {
             extraInfo += e.midi_is_url ? "♪URL:" : "♪SD:";
             extraInfo += e.midi_file;
         }
@@ -56,7 +56,7 @@ void drawDetail(int idx) {
     // SUMMARY（複数行）
     canvas.setTextSize(28);
     int y = 100;
-    String summary = removeUnsupportedChars(e.summary);
+    String summary = removeUnsupportedChars(e.summary());
     int summaryWidth = 36;
     while (summary.length() > 0 && y < 200) {
         String line = utf8Substring(summary, summaryWidth);
@@ -69,7 +69,7 @@ void drawDetail(int idx) {
     canvas.setTextSize(22);
     y = max(y + 10, 210);
     int maxY = 890;
-    String desc = removeUnsupportedChars(e.description);
+    String desc = removeUnsupportedChars(e.description());
     int skipLines = detail_scroll;
     int lineHeight = 28;
     int lineWidth = 42;
@@ -107,7 +107,7 @@ void drawPlaying(int idx) {
     canvas.drawString("ALARM!", 270, 60);
 
     canvas.setTextSize(32);
-    String summary = removeUnsupportedChars(e.summary);
+    String summary = removeUnsupportedChars(e.summary());
     String line1 = utf8Substring(summary, 30);
     canvas.drawString(line1, 270, 140);
     if (summary.length() > line1.length()) {
@@ -132,7 +132,7 @@ void drawPlaying(int idx) {
     // DESCRIPTION
     canvas.setTextDatum(TL_DATUM);
     canvas.setTextSize(24);
-    String desc = removeUnsupportedChars(e.description);
+    String desc = removeUnsupportedChars(e.description());
     int y = 370;
     int maxY = 880;
     int lineWidth = 36;

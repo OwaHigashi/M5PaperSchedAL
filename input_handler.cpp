@@ -257,31 +257,32 @@ void checkAlarms() {
             localtime_r(&events[i].alarm_time, &at);
             localtime_r(&events[i].start, &st);
             long remain = (long)(events[i].alarm_time - now);
-            Serial.printf("  [%d] %s\n", i, events[i].summary.c_str());
+            Serial.printf("  [%d] %s\n", i, events[i].summary());
             Serial.printf("      event:%02d/%02d %02d:%02d  alarm:%02d/%02d %02d:%02d  off:%dmin  remain:%lds\n",
                           st.tm_mon+1, st.tm_mday, st.tm_hour, st.tm_min,
                           at.tm_mon+1, at.tm_mday, at.tm_hour, at.tm_min,
                           events[i].offset_min, remain);
-            if (events[i].midi_file.length() > 0)
-                Serial.printf("      midi:%s (%s)\n", events[i].midi_file.c_str(), events[i].midi_is_url ? "URL" : "SD");
+            if (strlen(events[i].midi_file) > 0)
+                Serial.printf("      midi:%s (%s)\n", events[i].midi_file, events[i].midi_is_url ? "URL" : "SD");
         }
         if (pending == 0) Serial.println("  (no pending alarms)");
-        Serial.printf("=== events:%d, pending:%d, heap:%d, WiFi:%d, fails:%d ===\n\n",
-                      event_count, pending, ESP.getFreeHeap(), WiFi.RSSI(), fetch_fail_count);
+        Serial.printf("=== events:%d, pending:%d, heap:%d, maxBlock:%d, WiFi:%d, fails:%d ===\n\n",
+                      event_count, pending, ESP.getFreeHeap(), ESP.getMaxAllocHeap(),
+                      WiFi.RSSI(), fetch_fail_count);
     }
 
     // アラーム発火チェック
     for (int i = 0; i < event_count; i++) {
         if (events[i].has_alarm && !events[i].triggered && events[i].alarm_time <= now) {
             Serial.printf("\n*** ALARM FIRING! ***\n");
-            Serial.printf("  Event: %s\n", events[i].summary.c_str());
+            Serial.printf("  Event: %s\n", events[i].summary());
 
             // ntfy通知
             {
                 struct tm st; localtime_r(&events[i].start, &st);
-                char timeStr[32];
-                snprintf(timeStr, sizeof(timeStr), "%02d:%02d", st.tm_hour, st.tm_min);
-                String notifyMsg = String(timeStr) + " " + events[i].summary;
+                char notifyMsg[200];
+                snprintf(notifyMsg, sizeof(notifyMsg), "%02d:%02d %s",
+                         st.tm_hour, st.tm_min, events[i].summary());
                 sendNtfyNotification("M5Paper Alarm", notifyMsg);
             }
 
