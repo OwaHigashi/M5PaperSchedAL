@@ -48,6 +48,18 @@ void setup() {
     M5.EPD.SetRotation(90);
     M5.EPD.Clear(true);
 
+    // イベント配列をPSRAMに確保（M5.begin後＝PSRAM初期化後）
+    Serial.printf("PSRAM: %dKB free\n", ESP.getFreePsram() / 1024);
+    events = (EventItem*)ps_calloc(MAX_EVENTS, sizeof(EventItem));
+    Serial.printf("Events array: %d x %d = %dKB in PSRAM (%s)\n",
+                  MAX_EVENTS, (int)sizeof(EventItem),
+                  (int)(MAX_EVENTS * sizeof(EventItem) / 1024),
+                  events ? "OK" : "FAILED");
+    if (!events) {
+        Serial.println("FATAL: PSRAM allocation failed!");
+        while(1) delay(1000);
+    }
+
     // スイッチピン設定
     pinMode(SW_L_PIN, INPUT_PULLUP);
     pinMode(SW_R_PIN, INPUT_PULLUP);
@@ -176,6 +188,26 @@ void setup() {
 }
 
 //==============================================================================
+// 安全リブート（直近アラームがなければリブート）
+//==============================================================================
+void safeReboot() {
+    time_t now = time(nullptr);
+    for (int i = 0; i < event_count; i++) {
+        if (events[i].has_alarm && !events[i].triggered) {
+            long remain = (long)(events[i].alarm_time - now);
+            if (remain > 0 && remain < 300) {  // 5分以内
+                Serial.printf("REBOOT DEFERRED: alarm '%s' in %ld sec\n",
+                              events[i].summary(), remain);
+                reboot_pending = true;  // アラーム後にリブート
+                return;
+            }
+        }
+    }
+    delay(100);
+    ESP.restart();
+}
+
+//==============================================================================
 // メインループ
 //==============================================================================
 void loop() {
@@ -239,25 +271,42 @@ void loop() {
     // 定期ICS更新
     if (ui_state != UI_PLAYING) {
         time_t now = time(nullptr);
-        // events=0なら30秒間隔で積極リトライ、通常はpoll設定に従う
-        int poll_interval = (event_count == 0) ? 30
-                          : (config.ics_poll_min * 60) * (1 + min(fetch_fail_count, 5));
+        int poll_interval = (event_count == 0) ? 30 : (config.ics_poll_min * 60);
         if (now != (time_t)-1 && (now - last_fetch) >= poll_interval) {
             if (!sd_healthy) {
                 Serial.println("ICS fetch skipped - SD unhealthy");
                 last_fetch = now;
             } else {
-                // WiFi未接続、または連続失敗3回以上 → WiFiフルリセット
-                if (WiFi.status() != WL_CONNECTED || fetch_fail_count >= 3) {
-                    if (fetch_fail_count >= 3) {
-                        Serial.printf("WiFi reset (fail_count=%d, RSSI=%d, status=%d)\n",
-                                      fetch_fail_count, WiFi.RSSI(), WiFi.status());
-                    }
-                    connectWiFi();  // disconnect(true) + 再接続
+                // ヒープ断片化 → リブート（アラーム保護付き）
+                if ((int)ESP.getMaxAllocHeap() < 45000) {
+                    Serial.printf("*** REBOOT: heap fragmented, maxBlock:%d ***\n",
+                                  ESP.getMaxAllocHeap());
+                    safeReboot();
                 }
+
+                // WiFi未接続なら再接続
+                if (WiFi.status() != WL_CONNECTED) connectWiFi();
+
+                // フェッチ
                 if (WiFi.status() == WL_CONNECTED) {
                     int before = event_count;
                     fetchAndUpdate();
+
+                    if (event_count == 0 && before > 0) {
+                        // 失敗 → WiFiリセットして再フェッチ
+                        Serial.println("Fetch lost all events, WiFi reset + retry");
+                        connectWiFi();
+                        if (WiFi.status() == WL_CONNECTED) {
+                            fetchAndUpdate();
+                        }
+                    }
+
+                    if (event_count == 0 && before > 0) {
+                        // 2回失敗 → リブート（アラーム保護付き）
+                        Serial.println("*** REBOOT: fetch failed twice ***");
+                        safeReboot();
+                    }
+
                     Serial.printf("Periodic fetch: %d -> %d events\n", before, event_count);
                     if (ui_state == UI_LIST) { scrollToToday(); drawList(); }
                 }

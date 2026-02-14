@@ -130,7 +130,7 @@ void drawList() {
             showAlarmMark = !events[i].triggered;
         }
 
-        String summary = removeUnsupportedChars(events[i].summary);
+        String summary = removeUnsupportedChars(events[i].summary());
         int maxWidth = config.text_wrap ? 26 : 30;
         String dispSummary = utf8Substring(summary, maxWidth);
 
