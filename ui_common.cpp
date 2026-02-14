@@ -14,11 +14,14 @@ void saveScreenshot() {
     int width = canvas.width();
     int height = canvas.height();
 
+    // フォルダ作成
+    if (!SD.exists("/screenshots")) SD.mkdir("/screenshots");
+
     // 連番ファイル名
     int idx = 1;
-    char fname[32];
+    char fname[48];
     do {
-        snprintf(fname, sizeof(fname), "/ss%d.pgm", idx++);
+        snprintf(fname, sizeof(fname), "/screenshots/ss%d.pgm", idx++);
     } while (SD.exists(fname) && idx < 999);
 
     File f = SD.open(fname, FILE_WRITE);

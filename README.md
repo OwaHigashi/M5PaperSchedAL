@@ -40,7 +40,7 @@ SD Root/
 ├── midi/
 │   └── alarm.mid        デフォルトアラーム音
 └── midi-dl/             MIDI URL自動ダウンロード先（自動作成）
-    ss1.pgm ...          スクリーンショット（自動作成）
+└── screenshots/         スクリーンショット保存先（自動作成）
 ```
 
 ### フォント
@@ -166,9 +166,9 @@ SD Root/
 任意の画面で左上隅（80×80ピクセル）をタッチすると、現在の画面内容をSDカードに保存します。
 
 - 保存形式: PGM（Portable GrayMap）
-- ファイル名: `/ss1.pgm`, `/ss2.pgm`, ... と連番
+- ファイル名: `/screenshots/ss1.pgm`, `/screenshots/ss2.pgm`, ... と連番
 - 画面サイズ: 540×960ピクセル、グレースケール
-- シリアルログ: `Screenshot saved: /ss3.pgm (540x960)`
+- シリアルログ: `Screenshot saved: /screenshots/ss3.pgm (540x960)`
 
 PGMファイルはGIMP、IrfanView、ImageMagick等で開けます。PNGへの変換:
 ```bash
