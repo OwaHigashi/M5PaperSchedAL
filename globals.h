@@ -131,6 +131,7 @@ void fetchAndUpdate();
 
 // ui_common.cpp
 void drawText(const String& s, int x, int y);
+void saveScreenshot();
 String formatTime(int hour, int minute);
 void drawHeader(const char* title);
 

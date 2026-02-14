@@ -114,6 +114,12 @@ void handleSwitch(char sw) {
 void handleTouch(int tx, int ty) {
     last_interaction_ms = millis();
 
+    // 左上タッチ → スクリーンショット
+    if (tx < 80 && ty < 80) {
+        saveScreenshot();
+        return;
+    }
+
     switch (ui_state) {
         case UI_LIST: {
             // ボタンチェック
