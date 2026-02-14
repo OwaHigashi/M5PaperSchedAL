@@ -1,8 +1,43 @@
 #include "globals.h"
 #include <time.h>
+#include <SD.h>
 
 void drawText(const String& s, int x, int y) {
     canvas.drawString(s, x, y);
+}
+
+// スクリーンショットをPGM形式でSDに保存
+void saveScreenshot() {
+    waitEPDReady();
+    uint32_t bufferSize = canvas.getBufferSize();
+    uint8_t *buffer = (uint8_t *)(canvas.frameBuffer(1));
+    int width = canvas.width();
+    int height = canvas.height();
+
+    // 連番ファイル名
+    int idx = 1;
+    char fname[32];
+    do {
+        snprintf(fname, sizeof(fname), "/ss%d.pgm", idx++);
+    } while (SD.exists(fname) && idx < 999);
+
+    File f = SD.open(fname, FILE_WRITE);
+    if (!f) {
+        Serial.println("Screenshot: failed to open file");
+        return;
+    }
+
+    // PGMヘッダ
+    f.printf("P5 %d %d 255 ", width, height);
+
+    // 4bitグレースケール→8bitに変換して書き出し
+    for (uint32_t i = 0; i < bufferSize; i++) {
+        uint8_t byte = buffer[i];
+        f.write((uint8_t)(17 * (15 - (byte >> 4))));
+        f.write((uint8_t)(17 * (15 - (byte & 0x0F))));
+    }
+    f.close();
+    Serial.printf("Screenshot saved: %s (%dx%d)\n", fname, width, height);
 }
 
 String formatTime(int hour, int minute) {
