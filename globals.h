@@ -16,7 +16,7 @@ extern M5EPD_Canvas canvas;
 
 // 設定・データ
 extern Config config;
-extern EventItem events[MAX_EVENTS];
+extern EventItem* events;
 extern int event_count;
 
 // UI状態
@@ -68,6 +68,7 @@ extern int date_header_count;
 // タイミング
 extern time_t last_fetch;
 extern int fetch_fail_count;
+extern bool reboot_pending;
 extern unsigned long last_switch_check;
 extern unsigned long last_interaction_ms;
 extern time_t last_alarm_debug;

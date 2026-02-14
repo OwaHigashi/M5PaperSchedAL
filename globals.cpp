@@ -7,7 +7,7 @@
 M5EPD_Canvas canvas(&M5.EPD);
 
 Config config;
-EventItem events[MAX_EVENTS];
+EventItem* events = nullptr;
 int event_count = 0;
 
 UiState ui_state = UI_LIST;
@@ -49,6 +49,7 @@ int date_header_count = 0;
 
 time_t last_fetch = 0;
 int fetch_fail_count = 0;
+bool reboot_pending = false;
 unsigned long last_switch_check = 0;
 unsigned long last_interaction_ms = 0;
 time_t last_alarm_debug = 0;

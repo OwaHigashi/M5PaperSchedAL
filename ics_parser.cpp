@@ -192,22 +192,12 @@ void trimEventsAroundToday(int maxEvents) {
 
     if (start_idx > 0) {
         for (int i = 0; i < event_count - start_idx; i++) {
-            if (i < start_idx) {
-                events[i].summary = "";
-                events[i].description = "";
-                events[i].midi_file = "";
-            }
             events[i] = events[i + start_idx];
         }
         event_count -= start_idx;
     }
 
     if (event_count > maxEvents) {
-        for (int i = maxEvents; i < event_count; i++) {
-            events[i].summary = "";
-            events[i].description = "";
-            events[i].midi_file = "";
-        }
         event_count = maxEvents;
     }
     Serial.printf("TRIM: result=%d events\n", event_count);
@@ -270,11 +260,6 @@ static void registerEvent(const String& dtstart_raw, const String& summary, cons
     if (!parseDT(dtstart_raw, st, is_allday)) return;
     if (st <= now - 86400 || st >= now + 30 * 86400) return;
 
-    if (ESP.getFreeHeap() < (size_t)config.min_free_heap * 1024) {
-        // ヒープ不足 → これ以上登録しない（ログは1回だけ）
-        return;
-    }
-
     int off = 0;
     bool hasAL = false;
     String midi_file_str = "";
@@ -295,18 +280,31 @@ static void registerEvent(const String& dtstart_raw, const String& summary, cons
 
     int idx = event_count;
     events[idx].start = st;
-    events[idx].summary = summary;
 
-    String trimmedDesc = desc;
-    if ((int)trimmedDesc.length() > config.max_desc_bytes) {
-        int cutAt = config.max_desc_bytes;
-        while (cutAt > 0 && ((uint8_t)trimmedDesc[cutAt] & 0xC0) == 0x80) cutAt--;
-        trimmedDesc = trimmedDesc.substring(0, cutAt);
+    // text[] に summary \0 description \0 を格納
+    int bufSize = sizeof(events[idx].text);
+    int sumLen = summary.length();
+    if (sumLen >= bufSize - 2) sumLen = bufSize - 2;  // 最低 \0 desc \0 分確保
+    memcpy(events[idx].text, summary.c_str(), sumLen);
+    events[idx].text[sumLen] = '\0';
+
+    int descPos = sumLen + 1;
+    int descSpace = bufSize - descPos - 1;  // 末尾\0分
+    int maxDesc = min(descSpace, config.max_desc_bytes);
+    if ((int)desc.length() <= maxDesc) {
+        memcpy(events[idx].text + descPos, desc.c_str(), desc.length());
+        events[idx].text[descPos + desc.length()] = '\0';
+    } else {
+        // UTF-8境界で切り詰め
+        int cutAt = maxDesc;
+        while (cutAt > 0 && ((uint8_t)desc[cutAt] & 0xC0) == 0x80) cutAt--;
+        memcpy(events[idx].text + descPos, desc.c_str(), cutAt);
+        events[idx].text[descPos + cutAt] = '\0';
     }
-    events[idx].description = trimmedDesc;
+
     events[idx].has_alarm = hasAL;
     events[idx].is_allday = is_allday;
-    events[idx].midi_file = midi_file_str;
+    strlcpy(events[idx].midi_file, midi_file_str.c_str(), sizeof(events[idx].midi_file));
     events[idx].midi_is_url = midi_is_url_flag;
     events[idx].play_duration_sec = ev_duration;
     events[idx].play_repeat = ev_repeat;
@@ -324,13 +322,8 @@ static void registerEvent(const String& dtstart_raw, const String& summary, cons
     event_count++;
 }
 
-// イベント配列クリア
+// イベント配列クリア（固定長配列なのでカウントリセットだけでOK）
 static void clearEvents() {
-    for (int i = 0; i < event_count; i++) {
-        events[i].summary = "";
-        events[i].description = "";
-        events[i].midi_file = "";
-    }
     event_count = 0;
 }
 
@@ -426,8 +419,9 @@ static int doFetch() {
 
     int code = http.GET();
     if (code != HTTP_CODE_OK) {
-        Serial.printf("HTTP GET failed: %d (WiFi:%d RSSI:%d heap:%d)\n",
-                      code, WiFi.status(), WiFi.RSSI(), ESP.getFreeHeap());
+        Serial.printf("HTTP GET failed: %d (WiFi:%d RSSI:%d heap:%d maxBlock:%d)\n",
+                      code, WiFi.status(), WiFi.RSSI(), ESP.getFreeHeap(),
+                      ESP.getMaxAllocHeap());
         http.end();
         return -1;
     }
@@ -443,8 +437,8 @@ static int doFetch() {
 }
 
 void fetchAndUpdate() {
-    Serial.printf("Fetching ICS... (heap:%d WiFi:%d RSSI:%d fails:%d events:%d)\n",
-                  ESP.getFreeHeap(), WiFi.status(), WiFi.RSSI(),
+    Serial.printf("Fetching ICS... (heap:%d maxBlock:%d WiFi:%d RSSI:%d fails:%d events:%d)\n",
+                  ESP.getFreeHeap(), ESP.getMaxAllocHeap(), WiFi.status(), WiFi.RSSI(),
                   fetch_fail_count, event_count);
 
     // 時刻未同期チェック
