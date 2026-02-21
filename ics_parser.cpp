@@ -1,33 +1,122 @@
 #include "globals.h"
 #include <WiFiClientSecure.h>
-#include <HTTPClient.h>
-#include <base64.h>
+#include <mbedtls/base64.h>
 #include <time.h>
+#include <ctype.h>
+
+// ★ v029: ics_parser内のString完全排除 — char[]固定バッファのみ使用
+//    DRAM断片化の最大原因だった動的String確保/解放を根絶
+
+//==============================================================================
+// パーサー用バッファサイズ定数
+//==============================================================================
+static const int LINE_BUF      = 4096;  // ICS 1行 (unfold後)
+static const int PUSHBACK_BUF  = 4096;  // unfold pushback用
+static const int DTSTART_BUF   = 32;    // "20250214T120000Z" 程度
+static const int SUMMARY_BUF   = 512;   // タイトル
+static const int DESC_BUF      = 2048;  // 説明文
+static const int MIDI_FILE_BUF = 128;   // MIDIファイル名
+static const int CONTENT_BUF   = 256;   // アラームマーカー内容
+static const int NORM_BUF      = 512;   // 全角正規化用
+
+//==============================================================================
+// char ユーティリティ
+//==============================================================================
+
+// 先頭・末尾の空白を除去（in-place）
+static void trimBuf(char* s) {
+    int start = 0;
+    while (s[start] && (s[start] == ' ' || s[start] == '\t' || s[start] == '\r' || s[start] == '\n')) start++;
+    if (start > 0) {
+        int i = 0;
+        while (s[start + i]) { s[i] = s[start + i]; i++; }
+        s[i] = '\0';
+    }
+    int len = strlen(s);
+    while (len > 0 && (s[len-1] == ' ' || s[len-1] == '\t' || s[len-1] == '\r' || s[len-1] == '\n')) {
+        s[--len] = '\0';
+    }
+}
+
+// 全角ASCII→半角変換 (char版 normalizeFullWidth)
+static void normalizeFullWidthBuf(const char* src, char* dst, int dstSize) {
+    int di = 0;
+    int i = 0;
+    int srcLen = strlen(src);
+    while (i < srcLen && di < dstSize - 1) {
+        uint8_t b0 = (uint8_t)src[i];
+        if (b0 == 0xEF && i + 2 < srcLen) {
+            uint8_t b1 = (uint8_t)src[i + 1];
+            uint8_t b2 = (uint8_t)src[i + 2];
+            if (b1 == 0xBC && b2 >= 0x81 && b2 <= 0xBF) {
+                dst[di++] = (char)(b2 - 0x60);
+                i += 3; continue;
+            }
+            if (b1 == 0xBD && b2 >= 0x80 && b2 <= 0x9E) {
+                dst[di++] = (char)(b2 - 0x20);
+                i += 3; continue;
+            }
+        }
+        dst[di++] = src[i++];
+    }
+    dst[di] = '\0';
+}
+
+// strncpyの安全版（常にNUL終端）
+static void safeCopy(char* dst, const char* src, int dstSize) {
+    strlcpy(dst, src, dstSize);
+}
+
+// 部分文字列コピー（src[from..to-1]をdstへ）
+static void substrCopy(char* dst, const char* src, int from, int to, int dstSize) {
+    int srcLen = strlen(src);
+    if (from < 0) from = 0;
+    if (to > srcLen) to = srcLen;
+    int copyLen = to - from;
+    if (copyLen <= 0) { dst[0] = '\0'; return; }
+    if (copyLen >= dstSize) copyLen = dstSize - 1;
+    memcpy(dst, src + from, copyLen);
+    dst[copyLen] = '\0';
+}
+
+// atoi相当の安全版（空白トリム込み）
+static int safeAtoi(const char* s) {
+    while (*s == ' ') s++;
+    return atoi(s);
+}
 
 //==============================================================================
 // 日時パース
 //==============================================================================
-bool parseDT(const String& raw, time_t& out, bool& is_allday) {
-    String s = raw;
-    s.trim();
-    bool utc = s.endsWith("Z");
-    if (utc) s.remove(s.length() - 1);
+bool parseDT(const char* raw, time_t& out, bool& is_allday) {
+    char s[DTSTART_BUF];
+    safeCopy(s, raw, DTSTART_BUF);
+    trimBuf(s);
+
+    int slen = strlen(s);
+    bool utc = (slen > 0 && s[slen - 1] == 'Z');
+    if (utc) s[slen - 1] = '\0';
+    slen = strlen(s);
 
     int y = 0, mo = 0, d = 0, h = 0, mi = 0, se = 0;
     is_allday = false;
 
-    if (s.length() == 8) {
-        y  = s.substring(0, 4).toInt();
-        mo = s.substring(4, 6).toInt();
-        d  = s.substring(6, 8).toInt();
+    // 数字部分を直接抽出（substring不要）
+    auto dig2 = [](const char* p) -> int { return (p[0] - '0') * 10 + (p[1] - '0'); };
+    auto dig4 = [](const char* p) -> int { return (p[0]-'0')*1000 + (p[1]-'0')*100 + (p[2]-'0')*10 + (p[3]-'0'); };
+
+    if (slen == 8) {
+        y  = dig4(s);
+        mo = dig2(s + 4);
+        d  = dig2(s + 6);
         is_allday = true;
-    } else if (s.length() >= 15 && s[8] == 'T') {
-        y  = s.substring(0, 4).toInt();
-        mo = s.substring(4, 6).toInt();
-        d  = s.substring(6, 8).toInt();
-        h  = s.substring(9, 11).toInt();
-        mi = s.substring(11, 13).toInt();
-        se = s.substring(13, 15).toInt();
+    } else if (slen >= 15 && s[8] == 'T') {
+        y  = dig4(s);
+        mo = dig2(s + 4);
+        d  = dig2(s + 6);
+        h  = dig2(s + 9);
+        mi = dig2(s + 11);
+        se = dig2(s + 13);
     } else {
         return false;
     }
@@ -57,14 +146,18 @@ bool parseDT(const String& raw, time_t& out, bool& is_allday) {
 //==============================================================================
 // アラームマーカーパーサー
 //==============================================================================
-bool parseAlarmMarker(const String& s_raw, bool is_summary, int& off, bool& found,
-                      String& midi_file, bool& midi_is_url,
+bool parseAlarmMarker(const char* s_raw, bool is_summary, int& off, bool& found,
+                      char* midi_file, int midi_file_size, bool& midi_is_url,
                       int& duration_sec, int& repeat_count) {
-    String s = normalizeFullWidth(s_raw);
+    static char* norm = nullptr;  // PSRAM上に配置
+    if (!norm) norm = (char*)ps_malloc(NORM_BUF);
+    normalizeFullWidthBuf(s_raw, norm, NORM_BUF);
+    const char* s = norm;
+    int sLen = strlen(s);
 
     found = false;
     off = config.alarm_offset_default;
-    midi_file = "";
+    midi_file[0] = '\0';
     midi_is_url = false;
     duration_sec = -1;
     repeat_count = -1;
@@ -72,7 +165,7 @@ bool parseAlarmMarker(const String& s_raw, bool is_summary, int& off, bool& foun
 
     if (is_summary) {
         int exclamCount = 0;
-        for (int i = 0; i < (int)s.length(); i++) {
+        for (int i = 0; i < sLen; i++) {
             if (s[i] == '!') exclamCount++;
         }
         if (exclamCount == 1) {
@@ -82,65 +175,73 @@ bool parseAlarmMarker(const String& s_raw, bool is_summary, int& off, bool& foun
     }
 
     int searchStart = 0;
-    while (searchStart < (int)s.length()) {
-        int p = s.indexOf('!', searchStart);
-        if (p < 0) break;
+    while (searchStart < sLen) {
+        const char* pPtr = strchr(s + searchStart, '!');
+        if (!pPtr) break;
+        int p = pPtr - s;
 
-        int endExcl = s.indexOf('!', p + 1);
-        if (endExcl < 0) {
+        const char* ePtr = strchr(s + p + 1, '!');
+        if (!ePtr) {
             if (is_summary) { found = true; return true; }
             break;
         }
+        int endExcl = ePtr - s;
 
         found = true;
-        String content = s.substring(p + 1, endExcl);
+
+        static char* content = nullptr;
+        if (!content) content = (char*)ps_malloc(CONTENT_BUF);
+        substrCopy(content, s, p + 1, endExcl, CONTENT_BUF);
 
         int thisOff = config.alarm_offset_default;
         bool thisIsUrl = false;
-        String thisFile = "";
+        char thisFile[MIDI_FILE_BUF];
+        thisFile[0] = '\0';
 
+        int cLen = strlen(content);
         int i = 0;
-        while (i < (int)content.length()) {
+        while (i < cLen) {
             char c = content[i];
             if (c == '-' || c == '+') {
                 int numStart = i + 1, numEnd = numStart;
-                while (numEnd < (int)content.length() &&
-                       (isdigit(content[numEnd]) || content[numEnd] == ' ')) numEnd++;
+                while (numEnd < cLen && (isdigit(content[numEnd]) || content[numEnd] == ' ')) numEnd++;
                 if (numEnd > numStart) {
-                    String num = content.substring(numStart, numEnd); num.trim();
-                    int val = num.toInt();
+                    char numBuf[16];
+                    substrCopy(numBuf, content, numStart, numEnd, sizeof(numBuf));
+                    int val = safeAtoi(numBuf);
                     if (val >= 0 && val <= 24 * 60) thisOff = (c == '-') ? val : -val;
                 }
                 i = numEnd;
             } else if (c == '>' || c == '<') {
                 thisIsUrl = (c == '>');
                 int fileStart = i + 1, fileEnd = fileStart;
-                while (fileEnd < (int)content.length() &&
+                while (fileEnd < cLen &&
                        content[fileEnd] != '-' && content[fileEnd] != '+' &&
                        content[fileEnd] != '@' && content[fileEnd] != '*' &&
                        content[fileEnd] != '>' && content[fileEnd] != '<') fileEnd++;
                 if (fileEnd > fileStart) {
-                    thisFile = content.substring(fileStart, fileEnd); thisFile.trim();
+                    substrCopy(thisFile, content, fileStart, fileEnd, MIDI_FILE_BUF);
+                    trimBuf(thisFile);
                 }
                 i = fileEnd;
             } else if (c == '@') {
                 int numStart = i + 1, numEnd = numStart;
-                while (numEnd < (int)content.length() &&
-                       (isdigit(content[numEnd]) || content[numEnd] == ' ')) numEnd++;
+                while (numEnd < cLen && (isdigit(content[numEnd]) || content[numEnd] == ' ')) numEnd++;
                 if (numEnd > numStart) {
-                    String num = content.substring(numStart, numEnd); num.trim();
-                    duration_sec = num.toInt();
+                    char numBuf[16];
+                    substrCopy(numBuf, content, numStart, numEnd, sizeof(numBuf));
+                    duration_sec = safeAtoi(numBuf);
                 } else {
                     duration_sec = 0;
                 }
                 i = numEnd;
             } else if (c == '*') {
                 int numStart = i + 1, numEnd = numStart;
-                while (numEnd < (int)content.length() &&
-                       (isdigit(content[numEnd]) || content[numEnd] == ' ')) numEnd++;
+                while (numEnd < cLen && (isdigit(content[numEnd]) || content[numEnd] == ' ')) numEnd++;
                 if (numEnd > numStart) {
-                    String num = content.substring(numStart, numEnd); num.trim();
-                    repeat_count = num.toInt();
+                    char numBuf[16];
+                    substrCopy(numBuf, content, numStart, numEnd, sizeof(numBuf));
+                    repeat_count = safeAtoi(numBuf);
                 }
                 i = numEnd;
             } else {
@@ -149,7 +250,10 @@ bool parseAlarmMarker(const String& s_raw, bool is_summary, int& off, bool& foun
         }
 
         if (abs(thisOff) > abs(maxOff) || maxOff == -1) maxOff = thisOff;
-        if (thisFile.length() > 0) { midi_file = thisFile; midi_is_url = thisIsUrl; }
+        if (thisFile[0] != '\0') {
+            safeCopy(midi_file, thisFile, midi_file_size);
+            midi_is_url = thisIsUrl;
+        }
         searchStart = endExcl + 1;
     }
 
@@ -204,46 +308,61 @@ void trimEventsAroundToday(int maxEvents) {
 }
 
 //==============================================================================
-// ストリーミングICSパーサー
+// ストリーミングICSパーサー（String完全排除版）
 //==============================================================================
 
-// ストリームから1行読み取り（CRLF/LF区切り）
-static bool readRawLine(WiFiClient* stream, String& line, int maxLen = 2048) {
-    line = "";
+// ストリームから1行読み取り（CRLF/LF区切り）→ char buf版
+static bool readRawLine(WiFiClient* stream, char* buf, int bufSize) {
+    int len = 0;
+    buf[0] = '\0';
     unsigned long timeout = millis() + 10000;
 
     while (stream->connected() || stream->available()) {
         if (millis() > timeout) {
             Serial.println("ICS_STREAM: readline timeout");
-            return line.length() > 0;
+            buf[len] = '\0';
+            return len > 0;
         }
         if (!stream->available()) { delay(1); continue; }
 
         char c = stream->read();
         if (c == '\r') continue;
-        if (c == '\n') return true;
-        if ((int)line.length() < maxLen) line += c;
+        if (c == '\n') { buf[len] = '\0'; return true; }
+        if (len < bufSize - 1) buf[len++] = c;
     }
-    return line.length() > 0;
+    buf[len] = '\0';
+    return len > 0;
 }
 
 // RFC 5545 unfold処理統合 — 次行が空白/タブで始まる場合は結合
-static bool readUnfoldedLine(WiFiClient* stream, String& line, String& pushback) {
-    if (pushback.length() > 0) {
-        line = pushback;
-        pushback = "";
+static bool readUnfoldedLine(WiFiClient* stream, char* line, int lineSize,
+                             char* pushback, int pushbackSize) {
+    if (pushback[0] != '\0') {
+        safeCopy(line, pushback, lineSize);
+        pushback[0] = '\0';
     } else {
-        if (!readRawLine(stream, line)) return false;
+        if (!readRawLine(stream, line, lineSize)) return false;
     }
 
-    while (stream->connected() || stream->available()) {
-        String nextLine;
-        if (!readRawLine(stream, nextLine)) break;
+    int lineLen = strlen(line);
 
-        if (nextLine.length() > 0 && (nextLine[0] == ' ' || nextLine[0] == '\t')) {
-            if ((int)line.length() < 4096) line += nextLine.substring(1);
+    while (stream->connected() || stream->available()) {
+        // 次の行をtempバッファに仮読み（PSRAM上に確保）
+        static char* nextLine = nullptr;
+        if (!nextLine) nextLine = (char*)ps_malloc(LINE_BUF);
+        if (!readRawLine(stream, nextLine, LINE_BUF)) break;
+
+        if (nextLine[0] == ' ' || nextLine[0] == '\t') {
+            // unfold: 先頭空白を飛ばして結合
+            int addLen = strlen(nextLine + 1);
+            if (lineLen + addLen < lineSize - 1) {
+                memcpy(line + lineLen, nextLine + 1, addLen);
+                lineLen += addLen;
+                line[lineLen] = '\0';
+            }
         } else {
-            pushback = nextLine;
+            // 次の論理行 → pushbackに保存
+            safeCopy(pushback, nextLine, pushbackSize);
             return true;
         }
     }
@@ -251,7 +370,7 @@ static bool readUnfoldedLine(WiFiClient* stream, String& line, String& pushback)
 }
 
 // 1つのVEVENTをevents[]に登録
-static void registerEvent(const String& dtstart_raw, const String& summary, const String& desc) {
+static void registerEvent(const char* dtstart_raw, const char* summary, const char* desc) {
     if (event_count >= MAX_EVENTS) return;
 
     time_t now = time(nullptr);
@@ -262,20 +381,22 @@ static void registerEvent(const String& dtstart_raw, const String& summary, cons
 
     int off = 0;
     bool hasAL = false;
-    String midi_file_str = "";
+    char midi_file_str[MIDI_FILE_BUF];
+    midi_file_str[0] = '\0';
     bool midi_is_url_flag = false;
     int ev_duration = -1, ev_repeat = -1;
 
-    parseAlarmMarker(summary, true, off, hasAL, midi_file_str, midi_is_url_flag,
-                     ev_duration, ev_repeat);
-    if (!hasAL && desc.length() > 0) {
-        parseAlarmMarker(desc, false, off, hasAL, midi_file_str, midi_is_url_flag,
-                         ev_duration, ev_repeat);
+    parseAlarmMarker(summary, true, off, hasAL, midi_file_str, MIDI_FILE_BUF,
+                     midi_is_url_flag, ev_duration, ev_repeat);
+    if (!hasAL && desc[0] != '\0') {
+        parseAlarmMarker(desc, false, off, hasAL, midi_file_str, MIDI_FILE_BUF,
+                         midi_is_url_flag, ev_duration, ev_repeat);
     }
 
     if (hasAL) {
-        Serial.printf("ICS_STREAM: [%d] ALARM '%s' offset=%d\n",
-                      event_count, summary.substring(0, 40).c_str(), off);
+        char logSum[41];
+        substrCopy(logSum, summary, 0, 40, sizeof(logSum));
+        Serial.printf("ICS_STREAM: [%d] ALARM '%s' offset=%d\n", event_count, logSum, off);
     }
 
     int idx = event_count;
@@ -283,28 +404,29 @@ static void registerEvent(const String& dtstart_raw, const String& summary, cons
 
     // text[] に summary \0 description \0 を格納
     int bufSize = sizeof(events[idx].text);
-    int sumLen = summary.length();
-    if (sumLen >= bufSize - 2) sumLen = bufSize - 2;  // 最低 \0 desc \0 分確保
-    memcpy(events[idx].text, summary.c_str(), sumLen);
+    int sumLen = strlen(summary);
+    if (sumLen >= bufSize - 2) sumLen = bufSize - 2;
+    memcpy(events[idx].text, summary, sumLen);
     events[idx].text[sumLen] = '\0';
 
     int descPos = sumLen + 1;
-    int descSpace = bufSize - descPos - 1;  // 末尾\0分
+    int descSpace = bufSize - descPos - 1;
     int maxDesc = min(descSpace, config.max_desc_bytes);
-    if ((int)desc.length() <= maxDesc) {
-        memcpy(events[idx].text + descPos, desc.c_str(), desc.length());
-        events[idx].text[descPos + desc.length()] = '\0';
+    int descLen = strlen(desc);
+    if (descLen <= maxDesc) {
+        memcpy(events[idx].text + descPos, desc, descLen);
+        events[idx].text[descPos + descLen] = '\0';
     } else {
         // UTF-8境界で切り詰め
         int cutAt = maxDesc;
         while (cutAt > 0 && ((uint8_t)desc[cutAt] & 0xC0) == 0x80) cutAt--;
-        memcpy(events[idx].text + descPos, desc.c_str(), cutAt);
+        memcpy(events[idx].text + descPos, desc, cutAt);
         events[idx].text[descPos + cutAt] = '\0';
     }
 
     events[idx].has_alarm = hasAL;
     events[idx].is_allday = is_allday;
-    strlcpy(events[idx].midi_file, midi_file_str.c_str(), sizeof(events[idx].midi_file));
+    strlcpy(events[idx].midi_file, midi_file_str, sizeof(events[idx].midi_file));
     events[idx].midi_is_url = midi_is_url_flag;
     events[idx].play_duration_sec = ev_duration;
     events[idx].play_repeat = ev_repeat;
@@ -322,32 +444,46 @@ static void registerEvent(const String& dtstart_raw, const String& summary, cons
     event_count++;
 }
 
-// イベント配列クリア（固定長配列なのでカウントリセットだけでOK）
-static void clearEvents() {
-    event_count = 0;
-}
-
 // ストリーミングパーサー本体
 static int parseICSStream(WiFiClient* stream) {
     bool inEvent = false;
-    String dtstart_raw, summary, desc;
-    String pushback = "";
     int parsed_events = 0;
-    String line;
+
+    // ★ パーサーバッファをPSRAMに配置 → DRAM .bss を節約
+    //    5分毎に呼ばれるが、同時実行はないので static で安全
+    static char* line = nullptr;
+    static char* pushback = nullptr;
+    static char* desc = nullptr;
+    if (!line) {
+        line     = (char*)ps_malloc(LINE_BUF);
+        pushback = (char*)ps_malloc(PUSHBACK_BUF);
+        desc     = (char*)ps_malloc(DESC_BUF);
+    }
+    // スタック節約: summary も static (同時実行なし)
+    char dtstart_raw[DTSTART_BUF];
+    static char summary[SUMMARY_BUF];
+
+    line[0] = '\0';
+    pushback[0] = '\0';
+    dtstart_raw[0] = '\0';
+    summary[0] = '\0';
+    desc[0] = '\0';
 
     Serial.printf("ICS_STREAM: Start parsing (heap: %d)\n", ESP.getFreeHeap());
 
-    while (readUnfoldedLine(stream, line, pushback)) {
-        line.trim();
-        if (!line.length()) continue;
+    while (readUnfoldedLine(stream, line, LINE_BUF, pushback, PUSHBACK_BUF)) {
+        trimBuf(line);
+        if (line[0] == '\0') continue;
 
-        if (line == "BEGIN:VEVENT") {
+        if (strcmp(line, "BEGIN:VEVENT") == 0) {
             inEvent = true;
-            dtstart_raw = ""; summary = ""; desc = "";
+            dtstart_raw[0] = '\0';
+            summary[0] = '\0';
+            desc[0] = '\0';
             continue;
         }
 
-        if (line == "END:VEVENT") {
+        if (strcmp(line, "END:VEVENT") == 0) {
             parsed_events++;
             if (inEvent) {
                 registerEvent(dtstart_raw, summary, desc);
@@ -357,25 +493,31 @@ static int parseICSStream(WiFiClient* stream) {
                 }
             }
             inEvent = false;
-            dtstart_raw = ""; summary = ""; desc = "";
+            dtstart_raw[0] = '\0';
+            summary[0] = '\0';
+            desc[0] = '\0';
             continue;
         }
 
         if (!inEvent) continue;
 
-        if (line.startsWith("DTSTART")) {
-            int c = line.indexOf(':');
-            if (c > 0) dtstart_raw = line.substring(c + 1);
-        } else if (line.startsWith("SUMMARY")) {
-            int c = line.indexOf(':');
-            if (c > 0) summary = line.substring(c + 1);
-        } else if (line.startsWith("DESCRIPTION")) {
-            int c = line.indexOf(':');
-            if (c > 0) {
-                int maxParseLen = 2000;
-                String full = line.substring(c + 1);
-                desc = ((int)full.length() > maxParseLen) ? full.substring(0, maxParseLen) : full;
-                full = "";
+        // プロパティ解析: "KEY;PARAMS:VALUE" または "KEY:VALUE"
+        const char* colon = strchr(line, ':');
+        if (!colon) continue;
+
+        if (strncmp(line, "DTSTART", 7) == 0 && (line[7] == ':' || line[7] == ';')) {
+            safeCopy(dtstart_raw, colon + 1, DTSTART_BUF);
+        } else if (strncmp(line, "SUMMARY", 7) == 0 && (line[7] == ':' || line[7] == ';')) {
+            safeCopy(summary, colon + 1, SUMMARY_BUF);
+        } else if (strncmp(line, "DESCRIPTION", 11) == 0 && (line[11] == ':' || line[11] == ';')) {
+            const char* val = colon + 1;
+            int valLen = strlen(val);
+            int maxParseLen = 2000;
+            if (valLen > maxParseLen) {
+                memcpy(desc, val, maxParseLen);
+                desc[maxParseLen] = '\0';
+            } else {
+                safeCopy(desc, val, DESC_BUF);
             }
         }
     }
@@ -383,8 +525,8 @@ static int parseICSStream(WiFiClient* stream) {
     Serial.printf("ICS_STREAM: Complete - parsed %d VEVENTs, loaded %d (heap: %d)\n",
                   parsed_events, event_count, ESP.getFreeHeap());
 
-    sortEvents();
-    trimEventsAroundToday(config.max_events);
+    // ★ sortEvents/trimEventsAroundToday は呼ばない
+    //   複数URL対応: 全URL fetch後にfetchAndUpdate()側で実行
     return event_count;
 }
 
@@ -392,107 +534,304 @@ static int parseICSStream(WiFiClient* stream) {
 // ICS取得 + ストリーミング解析
 //==============================================================================
 
-// 1回のHTTP取得+パースを実行。成功した件数を返す。
-static int doFetch() {
-    // ★ SSL接続前にイベントを解放 → 断片化を減らし、SSLに連続メモリを確保
-    clearEvents();
-    Serial.printf("Events cleared, heap: %d\n", ESP.getFreeHeap());
+// ★ HTTPヘッダーを1行読み取り (DRAM malloc ゼロ)
+// 戻り値: 行の長さ (0=空行=ヘッダー終了, -1=切断/タイムアウト)
+static int readHeaderLine(WiFiClient* c, char* buf, int maxLen) {
+    int i = 0;
+    unsigned long t0 = millis();
+    while (millis() - t0 < 15000) {
+        if (!c->connected() && !c->available()) return -1;
+        if (!c->available()) { delay(1); continue; }
+        int b = c->read();
+        if (b < 0) continue;
+        if (b == '\n') break;
+        if (b != '\r' && i < maxLen - 1) buf[i++] = b;
+    }
+    buf[i] = '\0';
+    return i;
+}
 
+// 1つのURLをHTTP取得+パースを実行。成功した件数を返す。-1で失敗。
+// ★ バッファ管理は呼び出し側(fetchAndUpdate)が行う
+// ★ events[]にアペンド（event_countは増加していく）
+static int doFetchURL(const char* url_str) {
+    // ── URL解析 (static — スタック節約、同時実行なし) ──
+    static char host[128];
+    static char path[256];
+    int port = 443;
+    bool use_ssl = true;
+
+    const char* url = url_str;
+    if (strncmp(url, "https://", 8) == 0) { url += 8; }
+    else if (strncmp(url, "http://", 7) == 0) { url += 7; port = 80; use_ssl = false; }
+
+    const char* pathStart = strchr(url, '/');
+    if (pathStart) {
+        int hostLen = pathStart - url;
+        if (hostLen >= (int)sizeof(host)) hostLen = sizeof(host) - 1;
+        memcpy(host, url, hostLen);
+        host[hostLen] = '\0';
+        safeCopy(path, pathStart, sizeof(path));
+    } else {
+        safeCopy(host, url, sizeof(host));
+        strcpy(path, "/");
+    }
+
+    // ポート番号抽出 (host:port 形式)
+    char* colonInHost = strchr(host, ':');
+    if (colonInHost) {
+        port = atoi(colonInHost + 1);
+        *colonInHost = '\0';
+    }
+
+    Serial.printf("Raw HTTPS: host=%s port=%d path=%.40s...\n", host, port, path);
+
+    int count_before = event_count;  // このURL fetch前の件数
+
+    // ── SSL接続 ──
     WiFiClientSecure client;
     client.setInsecure();
     client.setTimeout(15);
+    Serial.printf("SSL client initialized (heap: %d, maxBlock: %d)\n",
+                  ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
-    HTTPClient http;
-    http.setTimeout(15000);
-    http.setConnectTimeout(10000);
-
-    if (!http.begin(client, config.ics_url)) {
-        Serial.println("HTTP begin failed");
+    if (!client.connect(host, port)) {
+        Serial.printf("SSL connect failed (heap:%d maxBlock:%d)\n",
+                      ESP.getFreeHeap(), ESP.getMaxAllocHeap());
         return -1;
     }
+    Serial.printf("SSL connected (heap:%d maxBlock:%d)\n",
+                  ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
+    // ── HTTPリクエスト構築 (static — スタック節約) ──
+    static char authLine[512];
+    authLine[0] = '\0';
     if (strlen(config.ics_user) > 0) {
-        String auth = String(config.ics_user) + ":" + String(config.ics_pass);
-        String authHeader = "Basic " + base64::encode(auth);
-        http.addHeader("Authorization", authHeader);
+        static char auth_raw[256];
+        snprintf(auth_raw, sizeof(auth_raw), "%s:%s", config.ics_user, config.ics_pass);
+        static char b64[384];
+        size_t olen = 0;
+        mbedtls_base64_encode((unsigned char*)b64, sizeof(b64), &olen,
+                              (const unsigned char*)auth_raw, strlen(auth_raw));
+        b64[olen] = '\0';
+        snprintf(authLine, sizeof(authLine), "Authorization: Basic %s\r\n", b64);
     }
 
-    int code = http.GET();
-    if (code != HTTP_CODE_OK) {
-        Serial.printf("HTTP GET failed: %d (WiFi:%d RSSI:%d heap:%d maxBlock:%d)\n",
-                      code, WiFi.status(), WiFi.RSSI(), ESP.getFreeHeap(),
-                      ESP.getMaxAllocHeap());
-        http.end();
+    static char request[1024];
+    int reqLen = snprintf(request, sizeof(request),
+        "GET %s HTTP/1.1\r\n"
+        "Host: %s\r\n"
+        "%s"
+        "Connection: close\r\n"
+        "User-Agent: M5Paper/1.0\r\n"
+        "\r\n",
+        path, host, authLine);
+
+    client.write((uint8_t*)request, reqLen);
+    Serial.printf("HTTP request sent (%d bytes), waiting for response...\n", reqLen);
+
+    // ── レスポンスステータス行読み取り ──
+    static char statusLine[128];
+    int sl = readHeaderLine(&client, statusLine, sizeof(statusLine));
+    if (sl <= 0) {
+        Serial.printf("HTTP no response (heap:%d maxBlock:%d)\n",
+                      ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+        client.stop();
         return -1;
     }
 
-    Serial.printf("HTTP OK, content-length: %d, heap: %d\n",
-                  http.getSize(), ESP.getFreeHeap());
+    // "HTTP/1.x 200 OK" をチェック
+    int httpCode = 0;
+    const char* codeStart = strchr(statusLine, ' ');
+    if (codeStart) httpCode = atoi(codeStart + 1);
 
-    WiFiClient* stream = http.getStreamPtr();
-    int result = parseICSStream(stream);
+    if (httpCode != 200) {
+        Serial.printf("HTTP error: %d (%s) heap:%d maxBlock:%d\n",
+                      httpCode, statusLine,
+                      ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+        client.stop();
+        return -1;
+    }
 
-    http.end();
-    return result;
+    // ── ヘッダースキップ (空行まで読み飛ばし) ──
+    static char hdr[256];
+    while (true) {
+        int hl = readHeaderLine(&client, hdr, sizeof(hdr));
+        if (hl <= 0) break;
+    }
+    Serial.printf("HTTP OK, headers done (heap: %d)\n", ESP.getFreeHeap());
+
+    // ── ICSボディをストリーミング解析（events[]にアペンド） ──
+    int result = parseICSStream(&client);
+    client.stop();
+    Serial.printf("SSL cleanup done (heap:%d maxBlock:%d stack_free:%d)\n",
+                  ESP.getFreeHeap(), ESP.getMaxAllocHeap(),
+                  uxTaskGetStackHighWaterMark(NULL));
+
+    int added = event_count - count_before;
+    if (added > 0) {
+        return added;
+    }
+
+    // このURLからイベント追加なし
+    return (result >= 0) ? 0 : -1;
 }
 
-void fetchAndUpdate() {
-    Serial.printf("Fetching ICS... (heap:%d maxBlock:%d WiFi:%d RSSI:%d fails:%d events:%d)\n",
+
+bool fetchAndUpdate() {
+    Serial.printf("Fetching ICS...%s (heap:%d maxBlock:%d WiFi:%d RSSI:%d fails:%d events:%d)\n",
+                  debug_fetch ? " [DEBUG 30s]" : "",
                   ESP.getFreeHeap(), ESP.getMaxAllocHeap(), WiFi.status(), WiFi.RSSI(),
                   fetch_fail_count, event_count);
 
-    // 時刻未同期チェック
     time_t now_check = time(nullptr);
     if (now_check < 1700000000) {
         Serial.printf("SKIP ICS fetch - time not synced yet (%ld)\n", now_check);
-        return;
+        return false;
     }
 
     if (strlen(config.ics_url) == 0) {
         Serial.println("ICS URL not configured");
-        return;
+        return false;
     }
     if (ESP.getFreeHeap() < MIN_HEAP_FOR_FETCH) {
         Serial.printf("SKIP ICS fetch - heap too low: %d < %d\n",
                       ESP.getFreeHeap(), MIN_HEAP_FOR_FETCH);
         last_fetch = time(nullptr);
         fetch_fail_count++;
-        return;
+        return false;
     }
     if (WiFi.status() != WL_CONNECTED) {
         Serial.println("WiFi not connected, skipping ICS fetch");
         last_fetch = time(nullptr);
         fetch_fail_count++;
-        return;
+        return false;
     }
 
-    int result = doFetch();
+    // ── ダブルバッファ切り替え（1回だけ） ──
+    EventItem* prev_buf = events;
+    int prev_count = event_count;
+    EventItem* next_buf = (events == events_buf_a) ? events_buf_b : events_buf_a;
+    events = next_buf;
+    event_count = 0;
+    Serial.printf("Fetch: switching to buffer %s (prev: %d events)\n",
+                  (next_buf == events_buf_a) ? "A" : "B", prev_count);
 
-    if (result > 0) {
-        // 成功
-        fetch_fail_count = 0;
-        Serial.printf("Fetched %d events (heap: %d, next in %d min)\n",
-                      event_count, ESP.getFreeHeap(), config.ics_poll_min);
-        last_fetch = time(nullptr);
-        return;
+    // ── カンマ区切りで複数URL順次フェッチ ──
+    static char url_buf[512];
+    strlcpy(url_buf, config.ics_url, sizeof(url_buf));
+
+    int total_added = 0;
+    int url_count = 0;
+    int fail_count = 0;
+
+    char* saveptr = nullptr;
+    char* token = strtok_r(url_buf, ",", &saveptr);
+    while (token) {
+        // 前後の空白をトリム
+        while (*token == ' ') token++;
+        char* end = token + strlen(token) - 1;
+        while (end > token && *end == ' ') *end-- = '\0';
+
+        if (strlen(token) > 0) {
+            url_count++;
+
+            // URL間ヒープチェック: SSL接続に~45KB必要。不足ならスキップ
+            if (url_count > 1) {
+                size_t mb_between = ESP.getMaxAllocHeap();
+                if (mb_between < 50000) {
+                    Serial.printf("Skipping URL %d - maxBlock %d < 50KB (need ~45KB for SSL)\n",
+                                  url_count, mb_between);
+                    url_count--;  // このURLはカウントしない
+                    break;
+                }
+            }
+
+            Serial.printf("=== Fetching URL %d: %.60s... ===\n", url_count, token);
+            int result = doFetchURL(token);
+            if (result > 0) {
+                total_added += result;
+                Serial.printf("URL %d: +%d events (total: %d)\n", url_count, result, event_count);
+            } else if (result == 0) {
+                Serial.printf("URL %d: 0 events added\n", url_count);
+            } else {
+                fail_count++;
+                Serial.printf("URL %d: fetch failed\n", url_count);
+            }
+        }
+        token = strtok_r(nullptr, ",", &saveptr);
     }
 
-    // 失敗 or 0件 → 即リトライ（メモリは解放済みなので成功するはず）
-    Serial.printf("Fetch failed or 0 events, immediate retry (heap: %d)\n",
-                  ESP.getFreeHeap());
-    delay(2000);
+    Serial.printf("All URLs done: %d URLs, %d total events, %d failures\n",
+                  url_count, event_count, fail_count);
 
-    result = doFetch();
+    // ── 全URL失敗 → 旧バッファに復帰 ──
+    if (event_count == 0 && fail_count > 0) {
+        Serial.printf("All fetches failed - restoring previous %d events\n", prev_count);
+        events = prev_buf;
+        event_count = prev_count;
 
-    if (result > 0) {
-        fetch_fail_count = 0;
-        Serial.printf("Retry OK: %d events (heap: %d)\n",
-                      event_count, ESP.getFreeHeap());
-    } else {
         fetch_fail_count++;
-        Serial.printf("Retry also failed, events: %d (heap: %d)\n",
-                      event_count, ESP.getFreeHeap());
+        size_t mb = ESP.getMaxAllocHeap();
+
+        if (mb < 38000 && fetch_fail_count >= 3) {
+            Serial.printf("=== %d failures + maxBlock %d < 38KB - restart requested ===\n",
+                          fetch_fail_count, mb);
+            safeReboot();
+        } else if (fetch_fail_count >= 3) {
+            int backoff_min = min((int)(fetch_fail_count - 2) * 5, 30);
+            int poll_sec = (event_count == 0) ? 30 : (config.ics_poll_min * 60);
+            last_fetch = time(nullptr) + (backoff_min * 60) - poll_sec;
+            Serial.printf("=== Server unreachable (heap OK: maxBlock=%d) - backoff %d min ===\n",
+                          mb, backoff_min);
+            return false;
+        }
+
+        last_fetch = time(nullptr);
+        return false;
     }
 
+    // ── 全URLフェッチ完了後にソート＆トリム ──
+    sortEvents();
+    trimEventsAroundToday(config.max_events);
+
+    fetch_fail_count = 0;
+    size_t mb = ESP.getMaxAllocHeap();
+    Serial.printf("Fetched %d events from %d URLs (heap:%d maxBlock:%d next:%dmin)\n",
+                  event_count, url_count, ESP.getFreeHeap(), mb,
+                  debug_fetch ? 0 : config.ics_poll_min);
+
+    if (mb < 38000) {
+        Serial.printf("=== maxBlock %d < 38KB - proactive restart requested ===\n", mb);
+        safeReboot();
+    }
+
+    // ★ 画面表示テキスト比較
+    bool display_changed = displayContentChanged();
+
+    if (display_changed) {
+        Serial.printf("Display content changed (%d->%d items)\n",
+                      prev_count, event_count);
+    } else if (prev_count != event_count) {
+        Serial.printf("Events data changed but display unaffected (%d->%d items) - skip redraw\n",
+                      prev_count, event_count);
+    } else {
+        bool data_changed = false;
+        int cmp_count = min(prev_count, event_count);
+        for (int i = 0; i < cmp_count; i++) {
+            if (prev_buf[i].start != events[i].start ||
+                strcmp(prev_buf[i].text, events[i].text) != 0) {
+                data_changed = true;
+                break;
+            }
+        }
+        if (data_changed) {
+            Serial.printf("Events data changed but display unaffected (%d->%d items) - skip redraw\n",
+                          prev_count, event_count);
+        } else {
+            Serial.printf("Events unchanged (%d items)\n", event_count);
+        }
+    }
     last_fetch = time(nullptr);
+    return display_changed;
 }

@@ -35,27 +35,66 @@
 #include "globals.h"
 #include <SD.h>
 #include <time.h>
+#include <esp_system.h>
+
+// ★ WiFiClientSecure + mbedTLS のSSLハンドシェイクが内部で3-4KBのスタックを使用
+//    デフォルト8KBでは doFetch() → parseICSStream() → stream->read() のコールチェーンで溢れる
+SET_LOOP_TASK_STACK_SIZE(16 * 1024);
+
+// ダブルバッファ実体定義（PSRAM上に確保、setup()でps_calloc）
+EventItem* events_buf_a = nullptr;
+EventItem* events_buf_b = nullptr;
 
 //==============================================================================
 // セットアップ
 //==============================================================================
 void setup() {
+    // ★ サイレントリスタート判定
+    //    ESP_RST_SW = ESP.restart() = safeReboot()のみ
+    //    RTC_DATA_ATTR はM5Paperのブートローダーにクリアされるため使用不可
+    esp_reset_reason_t reason = esp_reset_reason();
+    bool silent_mode = (reason == ESP_RST_SW);
+
     Serial.begin(115200);
-    Serial.printf("\n=== M5Paper Alarm starting... ver.%s ===\n", BUILD_VERSION);
 
     M5.begin();
     M5.TP.SetRotation(90);
     M5.EPD.SetRotation(90);
-    M5.EPD.Clear(true);
 
-    // イベント配列をPSRAMに確保（M5.begin後＝PSRAM初期化後）
+    // ★ M5.begin後にログ出力（Serial再初期化後でも確実に出る）
+    Serial.printf("\n=== M5Paper Alarm starting... ver.%s ===\n", BUILD_VERSION);
+    const char* reasons[] = {
+        "UNKNOWN","POWERON","EXT","SW","PANIC","INT_WDT",
+        "TASK_WDT","WDT","DEEPSLEEP","BROWNOUT","SDIO"
+    };
+    Serial.printf("Reset reason: %s (%d), silent: %s\n",
+                  (reason < 11) ? reasons[reason] : "?", reason,
+                  silent_mode ? "YES" : "NO");
+
+    if (!silent_mode) {
+        M5.EPD.Clear(true);  // コールドブート時のみ画面クリア
+    } else {
+        Serial.println("*** Silent restart - e-paper display preserved ***");
+    }
+
+    // イベント配列をPSRAMにダブルバッファで確保（M5.begin後＝PSRAM初期化後）
     Serial.printf("PSRAM: %dKB free\n", ESP.getFreePsram() / 1024);
-    events = (EventItem*)ps_calloc(MAX_EVENTS, sizeof(EventItem));
-    Serial.printf("Events array: %d x %d = %dKB in PSRAM (%s)\n",
-                  MAX_EVENTS, (int)sizeof(EventItem),
-                  (int)(MAX_EVENTS * sizeof(EventItem) / 1024),
-                  events ? "OK" : "FAILED");
-    if (!events) {
+    Serial.printf("[MEM] After M5.begin: heap:%d maxBlock:%d\n",
+                  ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+    events_buf_a = (EventItem*)ps_calloc(MAX_EVENTS, sizeof(EventItem));
+    events_buf_b = (EventItem*)ps_calloc(MAX_EVENTS, sizeof(EventItem));
+    events = events_buf_a;
+    int bufKB = (int)(MAX_EVENTS * sizeof(EventItem) / 1024);
+    Serial.printf("Events double buffer: %d x %d = %dKB x2 = %dKB in PSRAM (%s)\n",
+                  MAX_EVENTS, (int)sizeof(EventItem), bufKB, bufKB * 2,
+                  (events_buf_a && events_buf_b) ? "OK" : "FAILED");
+    // PSRAM検証: アドレスが0x3F800000以降ならPSRAM、0x3FF00000以降ならDRAM
+    Serial.printf("  buf_a @ %p, buf_b @ %p (%s)\n",
+                  events_buf_a, events_buf_b,
+                  ((uintptr_t)events_buf_a >= 0x3F800000 && (uintptr_t)events_buf_a < 0x3FF00000) ? "PSRAM OK" : "DRAM!!");
+    Serial.printf("[MEM] After ps_calloc: heap:%d maxBlock:%d psram:%dKB\n",
+                  ESP.getFreeHeap(), ESP.getMaxAllocHeap(), ESP.getFreePsram() / 1024);
+    if (!events_buf_a || !events_buf_b) {
         Serial.println("FATAL: PSRAM allocation failed!");
         while(1) delay(1000);
     }
@@ -101,81 +140,104 @@ void setup() {
     // 設定読み込み
     loadConfig();
 
-    // キャンバス作成
-    canvas.createCanvas(540, 960);
-    canvas.setTextDatum(TL_DATUM);
-
-    // フォント読み込み
-    waitEPDReady();
-    if (SD.exists(FONT_PATH)) {
-        canvas.loadFont(FONT_PATH, SD);
-        canvas.createRender(64, 256);
-        canvas.createRender(48, 256);
-        canvas.createRender(40, 256);
-        canvas.createRender(32, 256);
-        canvas.createRender(28, 256);
-        canvas.createRender(26, 256);
-        canvas.createRender(24, 256);
-        canvas.createRender(22, 256);
-        canvas.createRender(20, 256);
-        Serial.println("Font loaded");
-    } else {
-        Serial.println("Font not found, using default");
-    }
-
     // MIDI UART初期化
     Serial2.begin(config.midi_baud, SERIAL_8N1, -1, port_tx_pins[config.port_select]);
     Serial.printf("MIDI UART on GPIO %d @ %d baud\n",
                   port_tx_pins[config.port_select], config.midi_baud);
 
-    // 起動画面
-    canvas.fillCanvas(0);
-    canvas.setTextColor(15);
-    canvas.setTextDatum(MC_DATUM);
-    canvas.setTextSize(32);
-    canvas.drawString("M5Paper Alarm", 270, 180);
-    canvas.setTextSize(24);
-    canvas.drawString("Connecting WiFi...", 270, 240);
-    canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+    // キャンバス作成
+    canvas.createCanvas(540, 960);
+    canvas.setTextDatum(TL_DATUM);
 
-    // WiFi接続
+    // ★ フォント読み込み（loadFont + createRender をまとめて実行）
+    //    キャッシュを256→64に縮小 → DRAM断片化を抑え、maxBlockを温存
+    //    未使用サイズ(40,64)削除、使用サイズ(30,32,48)追加
+    waitEPDReady();
+    if (SD.exists(FONT_PATH)) {
+        canvas.loadFont(FONT_PATH, SD);
+        canvas.createRender(48, 64);
+        canvas.createRender(32, 64);
+        canvas.createRender(30, 64);
+        canvas.createRender(28, 64);
+        canvas.createRender(26, 64);
+        canvas.createRender(24, 64);
+        canvas.createRender(22, 64);
+        canvas.createRender(20, 64);
+        canvas.createRender(18, 64);
+        Serial.printf("Font loaded (heap:%d maxBlock:%d)\n",
+                      ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+    } else {
+        Serial.println("Font not found, using default");
+    }
+
+    // 起動画面（コールドブート時のみ）
+    if (!silent_mode) {
+        canvas.fillCanvas(0);
+        canvas.setTextColor(15);
+        canvas.setTextDatum(MC_DATUM);
+        canvas.setTextSize(32);
+        canvas.drawString("M5Paper Alarm", 270, 180);
+        canvas.setTextSize(24);
+        char verBuf[64];
+        snprintf(verBuf, sizeof(verBuf), "ver.%s", BUILD_VERSION);
+        canvas.drawString(verBuf, 270, 240);
+        canvas.drawString("Connecting WiFi...", 270, 300);
+        canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+        waitEPDReady();
+    }
+
+    Serial.printf("Pre-WiFi memory: heap:%d maxBlock:%d\n",
+                  ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+
+    // WiFi + NTP + 初回fetch
     if (connectWiFi()) {
         configTzTime(TZ_JST, "pool.ntp.org", "time.google.com", "ntp.nict.jp");
 
-        canvas.drawString("WiFi OK! Syncing time...", 270, 280);
-        canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+        if (!silent_mode) {
+            canvas.drawString("WiFi OK!", 270, 360);
+            canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+        }
 
         // NTP同期待ち
         time_t now = 0;
         int retry = 0;
-        while (retry < 40) {  // 最大20秒
+        while (retry < 40) {
             delay(500);
             now = time(nullptr);
-            if (now > 1700000000) break;  // 2023年以降なら同期完了
+            if (now > 1700000000) break;
             retry++;
         }
         if (now < 1700000000) {
             Serial.printf("NTP sync FAILED after %d retries (time=%ld)\n", retry, now);
-            // 時刻未同期 → ICS取得しても日付フィルタで全件弾かれるのでスキップ
-            canvas.drawString("NTP sync failed, will retry", 270, 320);
-            canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+            if (!silent_mode) {
+                canvas.drawString("NTP sync failed", 270, 420);
+                canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+            }
             delay(1000);
         } else {
             Serial.printf("NTP sync OK: %ld (retry: %d)\n", now, retry);
 
-            // ICS取得
-            canvas.drawString("Fetching calendar...", 270, 320);
-            canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+            if (!silent_mode) {
+                canvas.drawString("Fetching calendar...", 270, 420);
+                canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+            }
             fetchAndUpdate();
             last_fetch = time(nullptr);
             Serial.printf("Initial fetch complete: %d events loaded\n", event_count);
         }
     } else {
-        canvas.drawString("WiFi Failed", 270, 280);
-        canvas.drawString("Press P for settings", 270, 320);
-        canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+        if (!silent_mode) {
+            canvas.drawString("WiFi Failed", 270, 360);
+            canvas.drawString("P長押し → 設定", 270, 420);
+            canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+        }
         delay(2000);
     }
+
+    // canvas状態リセット → リスト描画
+    canvas.setTextDatum(TL_DATUM);
+    canvas.setTextColor(15);
+    canvas.setTextSize(26);
 
     // 一覧表示
     ui_state = UI_LIST;
@@ -184,13 +246,23 @@ void setup() {
     last_interaction_ms = millis();
     last_sd_check_ms = millis();
     scrollToToday();
-    drawList();
+    Serial.printf("[DRAW] drawList: events=%d page_start=%d selected=%d silent=%s\n",
+                  event_count, page_start, selected_event,
+                  silent_mode ? "YES(skip push)" : "NO");
+    drawList(false, silent_mode);  // サイレント時はpushCanvasスキップ
+    Serial.println("[DRAW] drawList complete");
 }
 
 //==============================================================================
 // 安全リブート（直近アラームがなければリブート）
 //==============================================================================
 void safeReboot() {
+    // MIDI再生中は延期
+    if (midi_playing) {
+        Serial.println("REBOOT DEFERRED: MIDI playing");
+        reboot_pending = true;
+        return;
+    }
     time_t now = time(nullptr);
     for (int i = 0; i < event_count; i++) {
         if (events[i].has_alarm && !events[i].triggered) {
@@ -203,6 +275,8 @@ void safeReboot() {
             }
         }
     }
+    Serial.println("=== Silent reboot ===");
+    Serial.flush();
     delay(100);
     ESP.restart();
 }
@@ -211,6 +285,8 @@ void safeReboot() {
 // メインループ
 //==============================================================================
 void loop() {
+    unsigned long loop_start = millis();
+
     // MIDI再生更新
     updateMidiPlayback();
 
@@ -227,7 +303,11 @@ void loop() {
         bool is_touched = M5.TP.getFingerNum() > 0;
         if (was_touched && !is_touched) {
             tp_finger_t p = M5.TP.readFinger(0);
-            if (p.x > 0 && p.y > 0) handleTouch(p.x, p.y);
+            if (p.x > 0 && p.y > 0) {
+                unsigned long t = millis();
+                handleTouch(p.x, p.y);
+                Serial.printf("Touch(%d,%d) handled in %lu ms\n", p.x, p.y, millis() - t);
+            }
         }
         was_touched = is_touched;
         M5.TP.flush();
@@ -271,14 +351,14 @@ void loop() {
     // 定期ICS更新
     if (ui_state != UI_PLAYING) {
         time_t now = time(nullptr);
-        int poll_interval = (event_count == 0) ? 30 : (config.ics_poll_min * 60);
+        int poll_interval = debug_fetch ? 30 : ((event_count == 0) ? 30 : (config.ics_poll_min * 60));
         if (now != (time_t)-1 && (now - last_fetch) >= poll_interval) {
             if (!sd_healthy) {
                 Serial.println("ICS fetch skipped - SD unhealthy");
                 last_fetch = now;
             } else {
-                // ヒープ断片化 → リブート（アラーム保護付き）
-                if ((int)ESP.getMaxAllocHeap() < 45000) {
+                // ヒープ断片化 → リブート（String排除後は閾値を大幅引き下げ）
+                if ((int)ESP.getMaxAllocHeap() < 10000) {
                     Serial.printf("*** REBOOT: heap fragmented, maxBlock:%d ***\n",
                                   ESP.getMaxAllocHeap());
                     safeReboot();
@@ -287,32 +367,18 @@ void loop() {
                 // WiFi未接続なら再接続
                 if (WiFi.status() != WL_CONNECTED) connectWiFi();
 
-                // フェッチ
+                // フェッチ（ダブルバッファ: 失敗しても旧データ保持）
                 if (WiFi.status() == WL_CONNECTED) {
                     int before = event_count;
-                    fetchAndUpdate();
-
-                    if (event_count == 0 && before > 0) {
-                        // 失敗 → WiFiリセットして再フェッチ
-                        Serial.println("Fetch lost all events, WiFi reset + retry");
-                        connectWiFi();
-                        if (WiFi.status() == WL_CONNECTED) {
-                            fetchAndUpdate();
-                        }
-                    }
-
-                    if (event_count == 0 && before > 0) {
-                        // 2回失敗 → リブート（アラーム保護付き）
-                        Serial.println("*** REBOOT: fetch failed twice ***");
-                        safeReboot();
-                    }
-
+                    bool changed = fetchAndUpdate();
                     Serial.printf("Periodic fetch: %d -> %d events\n", before, event_count);
-                    if (ui_state == UI_LIST) { scrollToToday(); drawList(); }
+                    if (changed && ui_state == UI_LIST) { scrollToToday(); drawList(false, false, true); }
                 }
             }
         }
     }
 
+    unsigned long loop_dur = millis() - loop_start;
+    if (loop_dur > 100) Serial.printf("[LOOP] slow iteration: %lu ms\n", loop_dur);
     delay(1);
 }

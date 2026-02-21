@@ -1,10 +1,11 @@
 #include "globals.h"
+#include "ui_colors.h"
 #include <SD.h>
 
-void drawSettings() {
+void drawSettings(bool fast) {
     Serial.printf("drawSettings() called (cursor=%d, heap=%d)\n", settings_cursor, ESP.getFreeHeap());
-    canvas.fillCanvas(0);
-    canvas.setTextColor(15);
+    canvas.fillCanvas(COL_SETTINGS_BG);
+    canvas.setTextColor(COL_SETTINGS_TEXT);
     canvas.setTextDatum(TL_DATUM);
 
     canvas.setTextSize(26);
@@ -15,7 +16,7 @@ void drawSettings() {
     int rowH = 50;
 
     static const char* labels[] = {
-        "WiFi SSID", "WiFi Pass", "ICS URL", "ICS User", "ICS Pass",
+        "Debug Fetch", "WiFi SSID", "WiFi Pass", "ICS URL", "ICS User", "ICS Pass",
         "MIDI File", "MIDI URL", "MIDI Baud", "Port", "Alarm Offset",
         "Time Format", "Text Display", "ICS Poll", "Play Duration",
         "Play Repeat", "Notify Topic", "Notify Test", "ICS Update",
@@ -32,11 +33,12 @@ void drawSettings() {
         int i = settings_cursor + n;
         if (i >= SET_COUNT) break;
 
-        if (n == 0) canvas.fillRect(0, y, 540, rowH, 4);
+        if (n == 0) canvas.fillRect(0, y, 540, rowH, COL_SETTINGS_CURSOR);
 
         canvas.setTextSize(22);
         String val;
         switch (i) {
+            case SET_DEBUG_FETCH: val = debug_fetch ? "ON (30s)" : "OFF"; break;
             case SET_WIFI_SSID: val = config.wifi_ssid; break;
             case SET_WIFI_PASS: val = strlen(config.wifi_pass) > 0 ? "****" : "(empty)"; break;
             case SET_ICS_URL:   val = config.ics_url; break;
@@ -76,11 +78,11 @@ void drawSettings() {
     int navH = 48;
     canvas.setTextSize(22);
 
-    canvas.drawRect(5, navY, 130, navH, 15);
+    canvas.drawRect(5, navY, 130, navH, COL_SETTINGS_BTN);
     canvas.drawString("<<先頭", 25, navY + 12);
-    canvas.drawRect(145, navY, 130, navH, 15);
+    canvas.drawRect(145, navY, 130, navH, COL_SETTINGS_BTN);
     canvas.drawString("末尾>>", 165, navY + 12);
-    canvas.drawRect(285, navY, 130, navH, 15);
+    canvas.drawRect(285, navY, 130, navH, COL_SETTINGS_BTN);
     canvas.drawString("戻る", 320, navY + 12);
 
     canvas.setTextSize(20);
@@ -88,11 +90,19 @@ void drawSettings() {
     snprintf(footer, sizeof(footer), "[%d/%d]", settings_cursor + 1, SET_COUNT);
     drawText(footer, 440, navY + 14);
 
-    canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+    unsigned long t0 = millis();
+    canvas.pushCanvas(0, 0, fast ? UPDATE_MODE_DU4 : UPDATE_MODE_GC16);
+    Serial.printf("[SETTINGS] pushCanvas took %lu ms\n", millis() - t0);
 }
 
 void handleSettingsSelect() {
     switch (settings_cursor) {
+        case SET_DEBUG_FETCH:
+            debug_fetch = !debug_fetch;
+            Serial.printf("Debug fetch: %s (interval: %s)\n",
+                          debug_fetch ? "ON" : "OFF",
+                          debug_fetch ? "30s" : "normal");
+            drawSettings(); break;
         case SET_WIFI_SSID:
             keyboard_target = SET_WIFI_SSID;
             keyboard_buffer = config.wifi_ssid;
@@ -167,7 +177,7 @@ void handleSettingsSelect() {
             ui_state = UI_KEYBOARD; drawKeyboard(); break;
         case SET_NTFY_TEST: {
             Serial.println("\n*** NOTIFY TEST ***");
-            canvas.fillCanvas(0); canvas.setTextColor(15);
+            canvas.fillCanvas(COL_SETTINGS_BG); canvas.setTextColor(COL_SETTINGS_TEXT);
             canvas.setTextDatum(MC_DATUM); canvas.setTextSize(28);
             if (strlen(config.ntfy_topic) == 0) {
                 canvas.drawString("通知テスト失敗", 270, 400);
@@ -183,7 +193,7 @@ void handleSettingsSelect() {
                 canvas.drawString("通知送信中...", 270, 400);
                 canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
                 sendNtfyNotification("M5Paper Test", "通知テスト - This is a test notification");
-                canvas.fillCanvas(0); canvas.setTextColor(15);
+                canvas.fillCanvas(COL_SETTINGS_BG); canvas.setTextColor(COL_SETTINGS_TEXT);
                 canvas.setTextDatum(MC_DATUM); canvas.setTextSize(28);
                 canvas.drawString("通知送信完了", 270, 400);
                 canvas.setTextSize(22);
@@ -193,7 +203,7 @@ void handleSettingsSelect() {
             drawSettings(); break;
         }
         case SET_ICS_UPDATE:
-            canvas.fillCanvas(0); canvas.setTextColor(15);
+            canvas.fillCanvas(COL_SETTINGS_BG); canvas.setTextColor(COL_SETTINGS_TEXT);
             canvas.setTextDatum(MC_DATUM); canvas.setTextSize(28);
             canvas.drawString("ICS取得中...", 270, 280);
             canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
@@ -207,7 +217,7 @@ void handleSettingsSelect() {
             Serial.printf("  Exists: %s\n", SD.exists(config.midi_file) ? "YES" : "NO");
             Serial.printf("  Heap: %d\n", ESP.getFreeHeap());
             if (!SD.exists(config.midi_file)) {
-                canvas.fillCanvas(0); canvas.setTextColor(15);
+                canvas.fillCanvas(COL_SETTINGS_BG); canvas.setTextColor(COL_SETTINGS_TEXT);
                 canvas.setTextDatum(MC_DATUM); canvas.setTextSize(28);
                 canvas.drawString("MIDI再生失敗", 270, 400);
                 canvas.setTextSize(22);
@@ -225,7 +235,7 @@ void handleSettingsSelect() {
             playing_event = -1;
             if (startMidiPlayback(config.midi_file)) {
                 ui_state = UI_PLAYING;
-                canvas.fillCanvas(0); canvas.setTextColor(15);
+                canvas.fillCanvas(COL_SETTINGS_BG); canvas.setTextColor(COL_SETTINGS_TEXT);
                 canvas.setTextDatum(MC_DATUM);
                 canvas.setTextSize(48); canvas.drawString("SOUND TEST", 270, 200);
                 canvas.setTextSize(24); canvas.drawString(config.midi_file, 270, 300);
@@ -235,7 +245,7 @@ void handleSettingsSelect() {
                 canvas.setTextSize(28); canvas.drawString("タップで停止", 270, 450);
                 canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
             } else {
-                canvas.fillCanvas(0); canvas.setTextColor(15);
+                canvas.fillCanvas(COL_SETTINGS_BG); canvas.setTextColor(COL_SETTINGS_TEXT);
                 canvas.setTextDatum(MC_DATUM); canvas.setTextSize(28);
                 canvas.drawString("MIDI再生失敗", 270, 400);
                 canvas.setTextSize(22); canvas.drawString(config.midi_file, 270, 450);
@@ -252,14 +262,14 @@ void handleSettingsSelect() {
 }
 
 void drawMidiSelect() {
-    canvas.fillCanvas(0); canvas.setTextColor(15); canvas.setTextDatum(TL_DATUM);
+    canvas.fillCanvas(COL_SETTINGS_BG); canvas.setTextColor(COL_SETTINGS_TEXT); canvas.setTextDatum(TL_DATUM);
     canvas.setTextSize(26);
     drawText("=== MIDIファイル選択 ===", 10, 10);
 
     canvas.setTextSize(22);
     int y = 55, rowH = 38;
     for (int i = 0; i < midi_file_count && y < 880; i++) {
-        if (i == midi_select_cursor) canvas.fillRect(0, y - 2, 540, rowH - 2, 4);
+        if (i == midi_select_cursor) canvas.fillRect(0, y - 2, 540, rowH - 2, COL_SETTINGS_CURSOR);
         drawText(midi_files[i], 10, y);
         y += rowH;
     }
@@ -271,14 +281,14 @@ void drawMidiSelect() {
 }
 
 void drawBaudSelect() {
-    canvas.fillCanvas(0); canvas.setTextColor(15); canvas.setTextDatum(TL_DATUM);
+    canvas.fillCanvas(COL_SETTINGS_BG); canvas.setTextColor(COL_SETTINGS_TEXT); canvas.setTextDatum(TL_DATUM);
     canvas.setTextSize(26);
     drawText("=== MIDIボーレート選択 ===", 10, 10);
 
     canvas.setTextSize(30);
     int y = 80, rowH = 55;
     for (int i = 0; i < BAUD_OPTION_COUNT; i++) {
-        if (i == baud_select_cursor) canvas.fillRect(0, y - 5, 540, rowH - 5, 4);
+        if (i == baud_select_cursor) canvas.fillRect(0, y - 5, 540, rowH - 5, COL_SETTINGS_CURSOR);
         drawText(String(baud_options[i]), 20, y);
         y += rowH;
     }
@@ -289,14 +299,14 @@ void drawBaudSelect() {
 }
 
 void drawPortSelect() {
-    canvas.fillCanvas(0); canvas.setTextColor(15); canvas.setTextDatum(TL_DATUM);
+    canvas.fillCanvas(COL_SETTINGS_BG); canvas.setTextColor(COL_SETTINGS_TEXT); canvas.setTextDatum(TL_DATUM);
     canvas.setTextSize(26);
     drawText("=== ポート選択 ===", 10, 10);
 
     canvas.setTextSize(26);
     int y = 80, rowH = 55;
     for (int i = 0; i < PORT_COUNT; i++) {
-        if (i == port_select_cursor) canvas.fillRect(0, y - 5, 540, rowH - 5, 4);
+        if (i == port_select_cursor) canvas.fillRect(0, y - 5, 540, rowH - 5, COL_SETTINGS_CURSOR);
         drawText(port_names[i], 20, y);
         y += rowH;
     }

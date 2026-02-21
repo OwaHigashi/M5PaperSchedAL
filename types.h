@@ -30,7 +30,7 @@
 #define MAX_EVENTS              300
 #define ITEMS_PER_PAGE          12
 #define SD_CHECK_INTERVAL_MS    300000  // 5分
-#define MIN_HEAP_FOR_FETCH      60000   // ICSフェッチ前の最低ヒープ(byte)
+#define MIN_HEAP_FOR_FETCH      20000   // ICSフェッチ前の最低ヒープ(byte) ※String排除後は低くてOK
 
 #define BAUD_OPTION_COUNT       3
 #define PORT_COUNT              3
@@ -41,7 +41,7 @@
 struct Config {
     char wifi_ssid[64];
     char wifi_pass[64];
-    char ics_url[256];
+    char ics_url[512];            // カンマ区切りで複数ICS URL指定可
     char ics_user[64];
     char ics_pass[64];
     char midi_file[64];
@@ -98,6 +98,7 @@ enum UiState {
 };
 
 enum SettingsItem {
+    SET_DEBUG_FETCH,
     SET_WIFI_SSID,
     SET_WIFI_PASS,
     SET_ICS_URL,

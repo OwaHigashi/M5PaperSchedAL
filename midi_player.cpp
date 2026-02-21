@@ -115,9 +115,10 @@ void finishAlarm() {
     scrollToToday();
     drawList();
 
-    // アラーム待ちで延期されたリブートを実行
+    // アラーム/MIDI待ちで延期されたリブートを実行
     if (reboot_pending) {
         Serial.println("*** REBOOT: deferred reboot after alarm ***");
+        Serial.flush();
         delay(100);
         ESP.restart();
     }
