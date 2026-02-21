@@ -10,9 +10,9 @@ void checkSwitches() {
     bool sw_r = digitalRead(SW_R_PIN);
     bool sw_p = digitalRead(SW_P_PIN);
 
-    if (!sw_l && sw_l_prev) { Serial.println("SW_L pressed"); last_interaction_ms = millis(); handleSwitch('L'); }
-    if (!sw_r && sw_r_prev) { Serial.println("SW_R pressed"); last_interaction_ms = millis(); handleSwitch('R'); }
-    if (!sw_p && sw_p_prev) { Serial.println("SW_P pressed"); last_interaction_ms = millis(); handleSwitch('P'); }
+    if (!sw_l && sw_l_prev) { Serial.println("SW_L pressed"); unsigned long t=millis(); last_interaction_ms = millis(); handleSwitch('L'); Serial.printf("SW_L handled in %lu ms\n", millis()-t); }
+    if (!sw_r && sw_r_prev) { Serial.println("SW_R pressed"); unsigned long t=millis(); last_interaction_ms = millis(); handleSwitch('R'); Serial.printf("SW_R handled in %lu ms\n", millis()-t); }
+    if (!sw_p && sw_p_prev) { Serial.println("SW_P pressed"); unsigned long t=millis(); last_interaction_ms = millis(); handleSwitch('P'); Serial.printf("SW_P handled in %lu ms\n", millis()-t); }
 
     sw_l_prev = sw_l;
     sw_r_prev = sw_r;
@@ -26,32 +26,49 @@ void handleSwitch(char sw) {
                 ui_state = UI_SETTINGS; settings_cursor = 0; drawSettings();
             } else if (sw == 'L') {
                 if (event_count > 0) {
+                    int old = selected_event;
                     if (selected_event > 0) {
                         selected_event--;
-                        if (selected_event < page_start) page_start = max(0, page_start - ITEMS_PER_PAGE);
+                        if (selected_event < page_start) {
+                            page_start = max(0, selected_event - 2);
+                            drawList();
+                        } else {
+                            updateListCursor(old, selected_event);
+                        }
                     } else {
                         selected_event = event_count - 1;
-                        page_start = max(0, event_count - ITEMS_PER_PAGE);
+                        page_start = max(0, event_count - displayed_count);
+                        drawList();
                     }
-                    drawList();
                 }
             } else if (sw == 'R') {
                 if (event_count > 0) {
+                    int old = selected_event;
                     if (selected_event < event_count - 1) {
                         selected_event++;
-                        if (selected_event >= page_start + ITEMS_PER_PAGE) page_start += ITEMS_PER_PAGE;
+                        // 新カーソルが表示範囲外かチェック
+                        bool on_screen = false;
+                        for (int d = 0; d < displayed_count; d++) {
+                            if (row_event_idx[d] == selected_event) { on_screen = true; break; }
+                        }
+                        if (!on_screen) {
+                            page_start = max(0, selected_event - 2);
+                            drawList();
+                        } else {
+                            updateListCursor(old, selected_event);
+                        }
                     } else {
                         selected_event = 0; page_start = 0;
+                        drawList();
                     }
-                    drawList();
                 }
             }
             break;
 
         case UI_DETAIL:
             if (sw == 'P') { ui_state = UI_LIST; drawList(); }
-            else if (sw == 'L') { if (detail_scroll > 0) { detail_scroll--; drawDetail(selected_event); } }
-            else if (sw == 'R') { detail_scroll++; drawDetail(selected_event); }
+            else if (sw == 'L') { if (detail_scroll > 0) { detail_scroll--; drawDetail(selected_event, true); } }
+            else if (sw == 'R') { detail_scroll++; drawDetail(selected_event, true); }
             break;
 
         case UI_PLAYING:
@@ -59,10 +76,10 @@ void handleSwitch(char sw) {
 
         case UI_SETTINGS:
             if (sw == 'L') {
-                if (settings_cursor > 0) { settings_cursor--; drawSettings(); }
+                if (settings_cursor > 0) { settings_cursor--; drawSettings(true); }
                 else { ui_state = UI_LIST; scrollToToday(); drawList(); }
             } else if (sw == 'R') {
-                settings_cursor = (settings_cursor + 1) % SET_COUNT; drawSettings();
+                settings_cursor = (settings_cursor + 1) % SET_COUNT; drawSettings(true);
             } else if (sw == 'P') {
                 handleSettingsSelect();
             }
@@ -218,8 +235,8 @@ void handleTouch(int tx, int ty) {
         case UI_SETTINGS:
             // ナビゲーションボタン
             if (ty >= 900 && ty < 948) {
-                if (tx >= 5 && tx < 135) { settings_cursor = 0; drawSettings(); return; }
-                if (tx >= 145 && tx < 275) { settings_cursor = SET_COUNT - 1; drawSettings(); return; }
+                if (tx >= 5 && tx < 135) { settings_cursor = 0; drawSettings(true); return; }
+                if (tx >= 145 && tx < 275) { settings_cursor = SET_COUNT - 1; drawSettings(true); return; }
                 if (tx >= 285 && tx < 415) { ui_state = UI_LIST; scrollToToday(); drawList(); return; }
             }
             // 項目タップ

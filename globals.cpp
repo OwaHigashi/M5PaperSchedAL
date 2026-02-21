@@ -49,7 +49,11 @@ int date_header_count = 0;
 
 time_t last_fetch = 0;
 int fetch_fail_count = 0;
+bool debug_fetch = false;
 bool reboot_pending = false;
+DisplayRow last_pushed[MAX_DISPLAY_ROWS];
+int last_pushed_count = 0;
+bool row_changed[MAX_DISPLAY_ROWS];
 unsigned long last_switch_check = 0;
 unsigned long last_interaction_ms = 0;
 time_t last_alarm_debug = 0;
@@ -64,3 +68,71 @@ bool sd_healthy = true;
 bool sw_l_prev = true;
 bool sw_r_prev = true;
 bool sw_p_prev = true;
+
+//==============================================================================
+// 表示内容スナップショット（画面イメージベース比較）
+//   drawEventRow()と同じロジックで「画面に表示される文字列」を生成し保存
+//   生データ(text[4000])ではなく、utf8Substringで切り詰めた表示文字列で比較
+//   → len=153 vs len=120 でも画面上同一なら変更なしと判定
+//==============================================================================
+String computeRowDisplayText(int evtIdx) {
+    if (evtIdx >= event_count) return "";
+
+    struct tm st;
+    localtime_r(&events[evtIdx].start, &st);
+
+    // drawEventRow()と完全に同じフォーマット
+    String timeStr = events[evtIdx].is_allday ? "[終日]" : formatTime(st.tm_hour, st.tm_min);
+    String mark = "";
+    if (events[evtIdx].has_alarm) {
+        mark = events[evtIdx].triggered ? "*" : "♪";
+    }
+
+    String summary = removeUnsupportedChars(events[evtIdx].summary());
+    int maxWidth = config.text_wrap ? 26 : 30;
+    String dispSummary = utf8Substring(summary, maxWidth);
+
+    String result = timeStr + "|" + mark + "|" + dispSummary;
+
+    if (config.text_wrap && summary.length() > dispSummary.length()) {
+        String rest = summary.substring(dispSummary.length());
+        String line2 = utf8Substring(rest, 34);
+        result += "|" + line2;
+    }
+    return result;
+}
+
+void saveDisplaySnapshot() {
+    last_pushed_count = min(displayed_count, MAX_DISPLAY_ROWS);
+    for (int d = 0; d < last_pushed_count; d++) {
+        int idx = row_event_idx[d];
+        String txt = computeRowDisplayText(idx);
+        strncpy(last_pushed[d].display_text, txt.c_str(), DISPLAY_TEXT_LEN - 1);
+        last_pushed[d].display_text[DISPLAY_TEXT_LEN - 1] = '\0';
+    }
+}
+
+bool displayContentChanged() {
+    memset(row_changed, 0, sizeof(row_changed));
+
+    int count = min(displayed_count, MAX_DISPLAY_ROWS);
+    if (count != last_pushed_count) {
+        // 行数自体が変わった → 全行changed
+        for (int d = 0; d < count; d++) row_changed[d] = true;
+        return true;
+    }
+
+    bool any_changed = false;
+    for (int d = 0; d < count; d++) {
+        int idx = row_event_idx[d];
+        String newText = computeRowDisplayText(idx);
+
+        if (strcmp(last_pushed[d].display_text, newText.c_str()) != 0) {
+            row_changed[d] = true;
+            any_changed = true;
+            Serial.printf("Row %d (event[%d]) display differs: '%s'\n",
+                          d, idx, events[idx].summary());
+        }
+    }
+    return any_changed;
+}
