@@ -17,6 +17,8 @@ extern M5EPD_Canvas canvas;
 // 設定・データ
 extern Config config;
 extern EventItem* events;
+extern EventItem* events_buf_a;
+extern EventItem* events_buf_b;
 extern int event_count;
 
 // UI状態
@@ -65,9 +67,25 @@ extern int date_header_y0[10];
 extern int date_header_y1[10];
 extern int date_header_count;
 
+// 表示内容スナップショット（最後にpushCanvasした時の「画面表示テキスト」をPSRAMに保持）
+// 生データではなく、描画時にutf8Substringで切り詰めた実際の表示文字列を保存
+#define MAX_DISPLAY_ROWS 20
+#define DISPLAY_TEXT_LEN 256  // 表示文字列バッファ（time|mark|line1|line2）
+struct DisplayRow {
+    char display_text[DISPLAY_TEXT_LEN];
+};
+extern DisplayRow last_pushed[MAX_DISPLAY_ROWS];
+extern int last_pushed_count;
+extern bool row_changed[MAX_DISPLAY_ROWS];  // displayContentChangedが設定
+
+String computeRowDisplayText(int evtIdx);
+void saveDisplaySnapshot();
+bool displayContentChanged();  // row_changed[]も設定する
+
 // タイミング
 extern time_t last_fetch;
 extern int fetch_fail_count;
+extern bool debug_fetch;
 extern bool reboot_pending;
 extern unsigned long last_switch_check;
 extern unsigned long last_interaction_ms;
@@ -121,13 +139,14 @@ void finishAlarm();
 String getMidiPath(int eventIdx);
 
 // ics_parser.cpp
-bool parseDT(const String& raw, time_t& out, bool& is_allday);
-bool parseAlarmMarker(const String& s_raw, bool is_summary, int& off, bool& found,
-                      String& midi_file, bool& midi_is_url,
+bool parseDT(const char* raw, time_t& out, bool& is_allday);
+bool parseAlarmMarker(const char* s_raw, bool is_summary, int& off, bool& found,
+                      char* midi_file, int midi_file_size, bool& midi_is_url,
                       int& duration_sec, int& repeat_count);
 void sortEvents();
 void trimEventsAroundToday(int maxEvents);
-void fetchAndUpdate();
+bool fetchAndUpdate();
+void safeReboot();
 
 // ui_common.cpp
 void drawText(const String& s, int x, int y);
@@ -137,14 +156,15 @@ void drawHeader(const char* title);
 
 // ui_list.cpp
 void scrollToToday();
-void drawList();
+void drawList(bool fast = false, bool skip_push = false, bool highlight_changes = false);
+void updateListCursor(int old_sel, int new_sel);
 
 // ui_detail.cpp
-void drawDetail(int idx);
+void drawDetail(int idx, bool fast = false);
 void drawPlaying(int idx);
 
 // ui_settings.cpp
-void drawSettings();
+void drawSettings(bool fast = false);
 void handleSettingsSelect();
 void drawMidiSelect();
 void drawBaudSelect();
