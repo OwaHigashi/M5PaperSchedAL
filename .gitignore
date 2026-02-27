@@ -21,3 +21,4 @@ Thumbs.db
 
 # Config files that might contain sensitive data
 config.json
+/
