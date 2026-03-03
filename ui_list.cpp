@@ -174,6 +174,11 @@ void drawList(bool fast, bool skip_push, bool highlight_changes) {
     if (!sd_healthy) status += " SD:NG";
     drawText(status, 400, 10);
 
+    // ハートビート ● （drawList時点の状態を反映）
+    if (heartbeat_visible) {
+        canvas.fillCircle(529, 11, 5, 15);
+    }
+
     int y = 45;
     int rowH = 60;
     int lastDay = -1;
