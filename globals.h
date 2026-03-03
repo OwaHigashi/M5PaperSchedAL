@@ -100,6 +100,11 @@ extern bool midi_playing;
 // SD状態
 extern bool sd_healthy;
 
+// ハートビート（生存確認インジケーター）
+extern M5EPD_Canvas heartbeat_canvas;
+extern bool heartbeat_visible;
+extern unsigned long last_heartbeat_ms;
+
 // スイッチ状態
 extern bool sw_l_prev, sw_r_prev, sw_p_prev;
 

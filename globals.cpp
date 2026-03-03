@@ -65,6 +65,10 @@ bool midi_playing = false;
 
 bool sd_healthy = true;
 
+M5EPD_Canvas heartbeat_canvas(&M5.EPD);
+bool heartbeat_visible = false;
+unsigned long last_heartbeat_ms = 0;
+
 bool sw_l_prev = true;
 bool sw_r_prev = true;
 bool sw_p_prev = true;

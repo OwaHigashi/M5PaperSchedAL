@@ -2,6 +2,7 @@
 #include <WiFiClientSecure.h>
 #include <WiFi.h>
 #include <SD.h>
+#include <esp_task_wdt.h>
 
 // ★ HTTPClient完全排除 — 全HTTP通信をWiFiClient/WiFiClientSecure直接操作
 //    HTTPClient内部のString操作がSSLバッファと交互にDRAM mallocされ
@@ -22,6 +23,7 @@ bool connectWiFi() {
         while (WiFi.status() != WL_CONNECTED && millis() - t0 < 15000) {
             delay(500);
             Serial.print(".");
+            esp_task_wdt_reset();  // WiFi接続待ち中もWDTフィード
         }
         Serial.println();
 
