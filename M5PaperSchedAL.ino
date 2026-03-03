@@ -36,6 +36,7 @@
 #include <SD.h>
 #include <time.h>
 #include <esp_system.h>
+#include <esp_task_wdt.h>
 
 // ★ WiFiClientSecure + mbedTLS のSSLハンドシェイクが内部で3-4KBのスタックを使用
 //    デフォルト8KBでは doFetch() → parseICSStream() → stream->read() のコールチェーンで溢れる
@@ -251,6 +252,15 @@ void setup() {
                   silent_mode ? "YES(skip push)" : "NO");
     drawList(false, silent_mode);  // サイレント時はpushCanvasスキップ
     Serial.println("[DRAW] drawList complete");
+
+    // ハートビート用ミニキャンバス (14x14)
+    heartbeat_canvas.createCanvas(14, 14);
+
+    // ★ Task Watchdog Timer 有効化
+    //    CheckAFSR()等でESP32がフリーズした場合、120秒後に自動リブート
+    esp_task_wdt_init(120, true);   // 120秒タイムアウト、パニック→リブート
+    esp_task_wdt_add(NULL);         // 現在のタスク(loopTask)を監視対象に追加
+    Serial.println("Task WDT enabled (120s timeout)");
 }
 
 //==============================================================================
@@ -377,6 +387,20 @@ void loop() {
             }
         }
     }
+
+    // ハートビート ● 明滅（UI_LIST時のみ、5秒ごと）
+    if (ui_state == UI_LIST && (millis() - last_heartbeat_ms) >= 5000) {
+        last_heartbeat_ms = millis();
+        heartbeat_visible = !heartbeat_visible;
+        heartbeat_canvas.fillCanvas(0);
+        if (heartbeat_visible) {
+            heartbeat_canvas.fillCircle(7, 7, 5, 15);
+        }
+        heartbeat_canvas.pushCanvas(522, 4, UPDATE_MODE_DU);
+    }
+
+    // Task WDT フィード（ここに到達 = loop正常動作中）
+    esp_task_wdt_reset();
 
     unsigned long loop_dur = millis() - loop_start;
     if (loop_dur > 100) Serial.printf("[LOOP] slow iteration: %lu ms\n", loop_dur);
