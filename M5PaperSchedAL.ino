@@ -352,8 +352,12 @@ void loop() {
             int old_page = page_start;
             scrollToToday();
             if (page_start != old_page) {
-                Serial.printf("AUTO-REFRESH: page %d->%d\n", old_page, page_start);
+                Serial.printf("AUTO-REFRESH: page %d->%d (full redraw)\n", old_page, page_start);
                 drawList();
+            } else {
+                // ページ同じ → ヘッダー時刻 + 次イベントアンダーラインの部分更新のみ
+                partialRefreshHeader();
+                partialRefreshNextLine();
             }
         }
     }

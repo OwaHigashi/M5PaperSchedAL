@@ -197,6 +197,7 @@ void drawList(bool fast, bool skip_push, bool highlight_changes) {
             }
         }
     }
+    displayed_next_event_idx = nextEventIdx;  // 部分更新用に記録
 
     if (event_count == 0) {
         canvas.setTextSize(28);

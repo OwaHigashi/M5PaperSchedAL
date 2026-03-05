@@ -105,6 +105,9 @@ extern M5EPD_Canvas heartbeat_canvas;
 extern bool heartbeat_visible;
 extern unsigned long last_heartbeat_ms;
 
+// 部分更新用：表示中の「次のイベント」インデックス
+extern int displayed_next_event_idx;
+
 // スイッチ状態
 extern bool sw_l_prev, sw_r_prev, sw_p_prev;
 
@@ -158,6 +161,8 @@ void drawText(const String& s, int x, int y);
 void saveScreenshot();
 String formatTime(int hour, int minute);
 void drawHeader(const char* title);
+void partialRefreshHeader();
+void partialRefreshNextLine();
 
 // ui_list.cpp
 void scrollToToday();

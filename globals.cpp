@@ -69,6 +69,8 @@ M5EPD_Canvas heartbeat_canvas(&M5.EPD);
 bool heartbeat_visible = false;
 unsigned long last_heartbeat_ms = 0;
 
+int displayed_next_event_idx = -1;
+
 bool sw_l_prev = true;
 bool sw_r_prev = true;
 bool sw_p_prev = true;
