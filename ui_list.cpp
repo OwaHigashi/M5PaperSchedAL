@@ -139,12 +139,12 @@ void updateListCursor(int old_sel, int new_sel) {
     drawEventRow(new_sel, row_y0[new_d], true, nextEventIdx);
 
     // フッタのページ情報を更新
-    canvas.fillRect(0, 855, 200, 30, COL_BG);
-    canvas.setTextSize(20);
+    canvas.fillRect(0, 853, 200, 35, COL_BG);
+    canvas.setTextSize(26);
     canvas.setTextColor(COL_FOOTER_TEXT);
     char buf[32];
     snprintf(buf, sizeof(buf), "%d/%d件", new_sel + 1, event_count);
-    drawText(buf, 10, 860);
+    drawText(buf, 10, 858);
 
     unsigned long draw_ms = millis() - t0;
     unsigned long t1 = millis();
@@ -159,7 +159,7 @@ void drawList(bool fast, bool skip_push, bool highlight_changes) {
     canvas.setTextDatum(TL_DATUM);
 
     // ヘッダー
-    canvas.setTextSize(26);
+    canvas.setTextSize(32);
     time_t now = time(nullptr);
     struct tm lt;
     localtime_r(&now, &lt);
@@ -167,6 +167,7 @@ void drawList(bool fast, bool skip_push, bool highlight_changes) {
     String timeNow = formatTime(lt.tm_hour, lt.tm_min);
     snprintf(buf, sizeof(buf), "%02d/%02d %s", lt.tm_mon + 1, lt.tm_mday, timeNow.c_str());
     drawText(buf, 10, 8);
+    drawText(buf, 11, 8);
 
     // WiFi・SD状態
     canvas.setTextSize(22);
@@ -369,7 +370,7 @@ void drawList(bool fast, bool skip_push, bool highlight_changes) {
     displayed_count = displayed;
 
     // 次のアラーム表示
-    canvas.setTextSize(22);
+    canvas.setTextSize(26);
     int nextIdx = -1;
     for (int i = 0; i < event_count; i++) {
         if (events[i].has_alarm && !events[i].triggered && events[i].alarm_time > now) {
@@ -385,9 +386,9 @@ void drawList(bool fast, bool skip_push, bool highlight_changes) {
     }
 
     // ページ情報
-    canvas.setTextSize(20);
+    canvas.setTextSize(26);
     snprintf(buf, sizeof(buf), "%d/%d件", selected_event + 1, event_count);
-    drawText(buf, 10, 860);
+    drawText(buf, 10, 858);
 
     // ボタン描画
     int btnY = 900;

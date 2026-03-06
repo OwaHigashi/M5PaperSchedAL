@@ -76,7 +76,7 @@ void drawHeader(const char* title) {
 void partialRefreshHeader() {
     // メインcanvas のヘッダー領域を再描画
     canvas.fillRect(0, 0, 540, 40, COL_BG);
-    canvas.setTextSize(26);
+    canvas.setTextSize(32);
     canvas.setTextColor(COL_HEADER_TEXT);
     canvas.setTextDatum(TL_DATUM);
 
@@ -87,6 +87,7 @@ void partialRefreshHeader() {
     String timeNow = formatTime(lt.tm_hour, lt.tm_min);
     snprintf(buf, sizeof(buf), "%02d/%02d %s", lt.tm_mon + 1, lt.tm_mday, timeNow.c_str());
     canvas.drawString(buf, 10, 8);
+    canvas.drawString(buf, 11, 8);
 
     // WiFi・SD状態
     canvas.setTextSize(22);
