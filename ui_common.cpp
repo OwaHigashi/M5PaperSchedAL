@@ -57,18 +57,6 @@ String formatTime(int hour, int minute) {
     return String(buf);
 }
 
-void drawHeader(const char* title) {
-    canvas.setTextSize(24);
-    canvas.setTextColor(15);
-    time_t now = time(nullptr);
-    struct tm lt;
-    localtime_r(&now, &lt);
-
-    char buf[64];
-    snprintf(buf, sizeof(buf), "%02d/%02d %02d:%02d  %s",
-             lt.tm_mon + 1, lt.tm_mday, lt.tm_hour, lt.tm_min, title);
-    drawText(buf, 10, 10);
-}
 
 //==============================================================================
 // 部分更新: ヘッダー時刻のみ（メインcanvas上で再描画 → 該当領域だけEPDにプッシュ）
@@ -104,7 +92,7 @@ void partialRefreshHeader() {
     uint8_t* buf_ptr = (uint8_t*)canvas.frameBuffer(1);
     if (!buf_ptr) return;
     M5.EPD.WritePartGram4bpp(0, 0, 540, 40, buf_ptr);
-    M5.EPD.UpdateArea(0, 0, 540, 40, UPDATE_MODE_DU);
+    M5.EPD.UpdateArea(0, 0, 540, 40, UPDATE_MODE_DU4);
     Serial.printf("PARTIAL: header updated %02d:%02d\n", lt.tm_hour, lt.tm_min);
 }
 
