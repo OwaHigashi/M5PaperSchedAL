@@ -19,7 +19,7 @@
 // 日付ヘッダー（予定なし＝今日）
 #define COL_DATE_EMPTY_BG     12    // 背景
 #define COL_DATE_EMPTY_TEXT    3    // 文字（ダークグレー・細字）
-#define COL_NO_EVENT_TEXT      8    // 「予定なし」文字
+#define COL_NO_EVENT_TEXT     12    // 「予定なし」文字
 
 // カーソル（選択行）
 #define COL_CURSOR_BG          4    // 選択行の背景（0=黒 ～ 15=白）
