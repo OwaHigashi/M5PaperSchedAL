@@ -323,13 +323,13 @@ void loop() {
         M5.TP.flush();
     }
 
-    // アラームチェック
-    if (ui_state != UI_PLAYING && ui_state != UI_SETTINGS && ui_state != UI_KEYBOARD) {
+    // アラームチェック（UI_LIST時のみ — 他画面ではCheckAFSRブロック回避）
+    if (ui_state == UI_LIST) {
         checkAlarms();
     }
 
-    // SDカード健全性チェック（5分ごと、再生中以外）
-    if (ui_state != UI_PLAYING && (millis() - last_sd_check_ms) > SD_CHECK_INTERVAL_MS) {
+    // SDカード健全性チェック（5分ごと、UI_LIST時のみ — 他画面ではCheckAFSRブロック回避）
+    if (ui_state == UI_LIST && (millis() - last_sd_check_ms) > SD_CHECK_INTERVAL_MS) {
         last_sd_check_ms = millis();
         if (!checkSDHealth()) {
             Serial.println("SD_CHECK: Health check failed, attempting reinit");
@@ -340,6 +340,13 @@ void loop() {
             sd_healthy = true;
             Serial.printf("SD_CHECK: OK (heap: %d)\n", ESP.getFreeHeap());
         }
+    }
+
+    // 詳細画面: 30秒無操作で一覧に自動復帰
+    if (ui_state == UI_DETAIL && (millis() - last_interaction_ms) > 30000) {
+        Serial.println("[AUTO] Detail timeout 30s -> back to list");
+        ui_state = UI_LIST;
+        drawList();
     }
 
     // 操作なし3分以上 かつ UI_LIST の場合、毎分自動リフレッシュ
@@ -362,8 +369,8 @@ void loop() {
         }
     }
 
-    // 定期ICS更新
-    if (ui_state != UI_PLAYING) {
+    // 定期ICS更新（UI_LIST時のみ — 詳細/設定画面ではCheckAFSRブロック回避）
+    if (ui_state == UI_LIST) {
         time_t now = time(nullptr);
         int poll_interval = debug_fetch ? 30 : ((event_count == 0) ? 30 : (config.ics_poll_min * 60));
         if (now != (time_t)-1 && (now - last_fetch) >= poll_interval) {
