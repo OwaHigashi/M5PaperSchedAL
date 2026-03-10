@@ -8,6 +8,33 @@ void scrollToToday() {
     localtime_r(&now_t, &now_tm);
     int today = now_tm.tm_mday + now_tm.tm_mon * 100 + now_tm.tm_year * 10000;
 
+    Serial.printf("[SCROLL] today=%d/%d (%d), events=%d\n",
+                  now_tm.tm_mon + 1, now_tm.tm_mday, today, event_count);
+
+    // 今日の予定があるか確認（デバッグ用）
+    int today_count = 0;
+    for (int i = 0; i < event_count; i++) {
+        struct tm t;
+        localtime_r(&events[i].start, &t);
+        int day = t.tm_mday + t.tm_mon * 100 + t.tm_year * 10000;
+        if (day == today) {
+            today_count++;
+            Serial.printf("[SCROLL] today event[%d]: %02d:%02d %s\n",
+                          i, t.tm_hour, t.tm_min, events[i].summary());
+        }
+    }
+    if (today_count == 0) {
+        Serial.println("[SCROLL] NO events for today");
+        // 前後の日付を表示
+        for (int i = 0; i < min(event_count, 5); i++) {
+            struct tm t;
+            localtime_r(&events[i].start, &t);
+            Serial.printf("[SCROLL]   event[%d]: %02d/%02d %02d:%02d %s\n",
+                          i, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min,
+                          events[i].summary());
+        }
+    }
+
     for (int i = 0; i < event_count; i++) {
         struct tm t;
         localtime_r(&events[i].start, &t);
@@ -15,6 +42,7 @@ void scrollToToday() {
         if (day >= today) {
             page_start = i;
             selected_event = i;
+            Serial.printf("[SCROLL] page_start=%d (day=%d)\n", i, day);
             return;
         }
     }

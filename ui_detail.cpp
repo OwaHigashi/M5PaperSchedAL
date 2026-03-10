@@ -22,7 +22,8 @@ static int findLiteralNewline(const String& s) {
 // 戻り値: 描画しきれなかった残テキストがあれば true（↓スクロール矢印表示用）
 //==============================================================================
 static bool drawWrappedText(String text, int lineWidth, int lineHeight,
-                            int x, int maxY, int& skipLinesIn, int& yInOut) {
+                            int x, int maxY, int& skipLinesIn, int& yInOut,
+                            bool bold = false) {
     while (text.length() > 0) {
         int nlPos = findLiteralNewline(text);
         String line;
@@ -37,6 +38,11 @@ static bool drawWrappedText(String text, int lineWidth, int lineHeight,
             // "\n" より前の部分を行幅でクリップ
             String beforeNl = text.substring(0, nlPos);
             line = utf8Substring(beforeNl, lineWidth);
+            if (line.length() == 0) {
+                // 折り返し不能文字 → 1バイト進めて無限ループ防止
+                text = text.substring(1);
+                continue;
+            }
             if (line.length() >= beforeNl.length()) {
                 // "\n" まで全部収まった → "\n"(2文字)をスキップ
                 text = text.substring(nlPos + 2);
@@ -60,6 +66,7 @@ static bool drawWrappedText(String text, int lineWidth, int lineHeight,
             return true;  // 描画しきれない行が残っている
         }
         drawText(line, x, yInOut);
+        if (bold) drawText(line, x + 1, yInOut);
         yInOut += lineHeight;
     }
     return false;  // 全行描画完了
@@ -92,6 +99,7 @@ void drawDetail(int idx, bool fast) {
                  st.tm_year + 1900, st.tm_mon + 1, st.tm_mday, timeStr.c_str());
     }
     drawText(buf, 10, 8);
+    drawText(buf, 11, 8);  // bold
 
     // ── アラーム情報 (size 28) ──────────────────────────────────────────
     canvas.setTextSize(28);
@@ -107,6 +115,7 @@ void drawDetail(int idx, bool fast) {
         snprintf(buf, sizeof(buf), "アラーム: %s (%s) %s",
                  alTime.c_str(), offsetStr.c_str(), e.triggered ? "[済]" : "");
         drawText(buf, 10, y);
+        drawText(buf, 11, y);  // bold
         y += 36;
 
         // MIDI/再生情報 (size 26 — 最小サイズ)
@@ -122,9 +131,11 @@ void drawDetail(int idx, bool fast) {
         int rep = e.play_repeat >= 0 ? e.play_repeat : config.play_repeat;
         extraInfo += " x" + String(rep);
         drawText(extraInfo, 10, y);
+        drawText(extraInfo, 11, y);  // bold
         y += 34;
     } else {
         drawText("アラーム: なし", 10, y);
+        drawText("アラーム: なし", 11, y);  // bold
         y += 36;
     }
 
@@ -147,6 +158,10 @@ void drawDetail(int idx, bool fast) {
         } else if (nlPos > 0) {
             String beforeNl = summary.substring(0, nlPos);
             line = utf8Substring(beforeNl, summaryLineW);
+            if (line.length() == 0) {
+                summary = summary.substring(1);
+                continue;
+            }
             if (line.length() >= beforeNl.length()) {
                 summary = summary.substring(nlPos + 2);
             } else {
@@ -158,6 +173,7 @@ void drawDetail(int idx, bool fast) {
             summary = summary.substring(line.length());
         }
         drawText(line, 10, y);
+        drawText(line, 11, y);  // bold
         y += summaryLineH;
     }
 
@@ -173,16 +189,18 @@ void drawDetail(int idx, bool fast) {
 
     String desc = removeUnsupportedChars(e.description());
     bool hasMore = drawWrappedText(desc, DESC_LINE_W, DESC_LINE_H,
-                                   10, maxY, skipLines, y);
+                                   10, maxY, skipLines, y, true);
 
     // ── フッター＆スクロール矢印 ────────────────────────────────────────
     canvas.setTextSize(26);
     drawText("タップ:戻る  L/R:スクロール", 10, 910);
-    if (detail_scroll > 0) drawText("↑", 510, 180);
-    if (hasMore)            drawText("↓", 510, 850);
+    drawText("タップ:戻る  L/R:スクロール", 11, 910);  // bold
+    if (detail_scroll > 0) { drawText("↑", 510, 180); drawText("↑", 511, 180); }
+    if (hasMore)            { drawText("↓", 510, 850); drawText("↓", 511, 850); }
 
     unsigned long t0 = millis();
-    canvas.pushCanvas(0, 0, fast ? UPDATE_MODE_DU4 : UPDATE_MODE_GC16);
+    // スクロール時もGC16を使用（DU4はコントラストが低い）
+    canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
     Serial.printf("[DETAIL] pushCanvas took %lu ms\n", millis() - t0);
 }
 
