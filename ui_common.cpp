@@ -114,7 +114,7 @@ void partialRefreshNextLine() {
 
     if (newNextIdx == displayed_next_event_idx) return;  // 変化なし
 
-    int rowH = 60;
+    int rowH = 46;
     uint8_t* buf_ptr = (uint8_t*)canvas.frameBuffer(1);
     if (!buf_ptr) return;
     int stride = 540 / 2;  // 270 bytes/row (4bit grayscale)

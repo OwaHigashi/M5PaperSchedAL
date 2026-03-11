@@ -346,7 +346,8 @@ void loop() {
     if (ui_state == UI_DETAIL && (millis() - last_interaction_ms) > 30000) {
         Serial.println("[AUTO] Detail timeout 30s -> back to list");
         ui_state = UI_LIST;
-        drawList();
+        waitEPDReady();
+        drawList(false, false, false, true);
     }
 
     // 操作なし3分以上 かつ UI_LIST の場合、毎分自動リフレッシュ

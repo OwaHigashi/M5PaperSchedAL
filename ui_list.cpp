@@ -51,9 +51,11 @@ void scrollToToday() {
 }
 
 // 1行分のイベント描画（drawListとupdateListCursorから共通利用）
+static const int ROW_H = 46;
+
 static void drawEventRow(int evtIdx, int y, bool highlighted, int nextEventIdx) {
-    int rowH = 60;
-    canvas.setTextSize(26);
+    int rowH = ROW_H;
+    canvas.setTextSize(28);
     canvas.setTextColor(COL_ROW_TEXT);
 
     struct tm st;
@@ -74,41 +76,41 @@ static void drawEventRow(int evtIdx, int y, bool highlighted, int nextEventIdx) 
     }
 
     String summary = removeUnsupportedChars(events[evtIdx].summary());
-    int maxWidth = config.text_wrap ? 26 : 30;
+    int maxWidth = config.text_wrap ? 24 : 28;
     String dispSummary = utf8Substring(summary, maxWidth);
 
     const int TIME_X = 10;
-    const int MARK_X = 90;
-    const int SUMMARY_X = 118;
+    const int MARK_X = 96;
+    const int SUMMARY_X = 124;
 
     if (config.text_wrap && summary.length() > dispSummary.length()) {
-        drawText(timeStr, TIME_X, y + 3);
+        drawText(timeStr, TIME_X, y + 1);
         if (showAlarmMark) {
-            canvas.fillRect(MARK_X - 2, y + 1, 26, 28, COL_ALARM_BADGE_BG);
+            canvas.fillRect(MARK_X - 2, y, 28, 28, COL_ALARM_BADGE_BG);
             canvas.setTextColor(COL_ALARM_BADGE_FG);
-            drawText(alarmMark, MARK_X, y + 3);
+            drawText(alarmMark, MARK_X, y + 1);
             canvas.setTextColor(COL_ROW_TEXT);
         } else if (alarmMark.length() > 0) {
-            drawText(alarmMark, MARK_X, y + 3);
+            drawText(alarmMark, MARK_X, y + 1);
         }
-        drawText(dispSummary, SUMMARY_X, y + 3);
-        canvas.setTextSize(22);
+        drawText(dispSummary, SUMMARY_X, y + 1);
+        canvas.setTextSize(24);
         String rest = summary.substring(dispSummary.length());
-        String line2 = utf8Substring(rest, 34);
-        drawText(line2, 85, y + 32);
+        String line2 = utf8Substring(rest, 30);
+        drawText(line2, 85, y + 25);
     } else {
-        drawText(timeStr, TIME_X, y + 16);
+        drawText(timeStr, TIME_X, y + 9);
         if (showAlarmMark) {
-            canvas.fillRect(MARK_X - 2, y + 14, 26, 28, COL_ALARM_BADGE_BG);
+            canvas.fillRect(MARK_X - 2, y + 8, 28, 28, COL_ALARM_BADGE_BG);
             canvas.setTextColor(COL_ALARM_BADGE_FG);
-            drawText(alarmMark, MARK_X, y + 16);
+            drawText(alarmMark, MARK_X, y + 9);
             canvas.setTextColor(COL_ROW_TEXT);
         } else if (alarmMark.length() > 0) {
-            drawText(alarmMark, MARK_X, y + 16);
+            drawText(alarmMark, MARK_X, y + 9);
         }
         String dispPart = dispSummary;
         if (summary.length() > dispSummary.length()) dispPart += "..";
-        drawText(dispPart, SUMMARY_X, y + 16);
+        drawText(dispPart, SUMMARY_X, y + 9);
     }
 
     if (evtIdx == nextEventIdx) {
@@ -122,7 +124,7 @@ static void drawEventRow(int evtIdx, int y, bool highlighted, int nextEventIdx) 
 // カーソル移動のみの軽量更新（2行+フッタのみ再描画）
 void updateListCursor(int old_sel, int new_sel) {
     unsigned long t0 = millis();
-    int rowH = 60;
+    int rowH = ROW_H;
 
     // キャンバス状態を初期化
     canvas.setTextDatum(TL_DATUM);
@@ -181,7 +183,7 @@ void updateListCursor(int old_sel, int new_sel) {
                   draw_ms, millis() - t1, millis() - t0);
 }
 
-void drawList(bool fast, bool skip_push, bool highlight_changes) {
+void drawList(bool fast, bool skip_push, bool highlight_changes, bool clean_refresh) {
     canvas.fillCanvas(COL_BG);
     canvas.setTextColor(COL_HEADER_TEXT);
     canvas.setTextDatum(TL_DATUM);
@@ -209,7 +211,7 @@ void drawList(bool fast, bool skip_push, bool highlight_changes) {
     }
 
     int y = 45;
-    int rowH = 60;
+    int rowH = ROW_H;
     int lastDay = -1;
     date_header_count = 0;
     int displayed = 0;
@@ -439,11 +441,13 @@ void drawList(bool fast, bool skip_push, bool highlight_changes) {
     canvas.drawRect(btn_detail.x0, btn_detail.y0, 145, btnH, COL_BTN_BORDER);
     canvas.drawString("詳細", 435, btnY + 14);
 
+    m5epd_update_mode_t mode = fast ? UPDATE_MODE_DU4 : (clean_refresh ? UPDATE_MODE_GLR16 : UPDATE_MODE_GC16);
+    const char* mode_name = fast ? "DU4" : (clean_refresh ? "GLR16" : "GC16");
     Serial.printf("[LIST] push: displayed=%d events, y_final=%d mode=%s\n",
-                  displayed_count, y, skip_push ? "SKIP" : (fast ? "DU4" : "GC16"));
+                  displayed_count, y, skip_push ? "SKIP" : mode_name);
     if (!skip_push) {
         unsigned long t0 = millis();
-        canvas.pushCanvas(0, 0, fast ? UPDATE_MODE_DU4 : UPDATE_MODE_GC16);
+        canvas.pushCanvas(0, 0, mode);
         Serial.printf("[LIST] pushCanvas took %lu ms\n", millis() - t0);
     }
     // 表示内容スナップショット保存（pushの有無に関わらず内部状態を同期）
