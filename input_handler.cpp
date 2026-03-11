@@ -66,7 +66,7 @@ void handleSwitch(char sw) {
             break;
 
         case UI_DETAIL:
-            if (sw == 'P') { ui_state = UI_LIST; drawList(); }
+            if (sw == 'P') { ui_state = UI_LIST; waitEPDReady(); drawList(false, false, false, true); }
             else if (sw == 'L') { if (detail_scroll > 0) { detail_scroll--; drawDetail(selected_event, true); } }
             else if (sw == 'R') { detail_scroll++; drawDetail(selected_event, true); }
             break;
@@ -216,7 +216,7 @@ void handleTouch(int tx, int ty) {
         }
 
         case UI_DETAIL:
-            ui_state = UI_LIST; drawList(); break;
+            ui_state = UI_LIST; waitEPDReady(); drawList(false, false, false, true); break;
 
         case UI_PLAYING:
             finishAlarm(); break;

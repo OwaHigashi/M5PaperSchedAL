@@ -73,6 +73,29 @@ void loadConfig() {
     if (config.min_free_heap < 20) config.min_free_heap = 20;
 
     Serial.println("Config loaded");
+
+    // デバッグ用: 読み込んだ設定をシリアルに表示
+    Serial.println("=== CONFIG DUMP ===");
+    Serial.printf("  wifi_ssid: %s\n", config.wifi_ssid);
+    Serial.printf("  wifi_pass: %s\n", strlen(config.wifi_pass) > 0 ? "(set)" : "(empty)");
+    Serial.printf("  ics_url: %s\n", config.ics_url);
+    Serial.printf("  ics_user: %s\n", config.ics_user);
+    Serial.printf("  ics_pass: %s\n", strlen(config.ics_pass) > 0 ? "(set)" : "(empty)");
+    Serial.printf("  midi_file: %s\n", config.midi_file);
+    Serial.printf("  midi_url: %s\n", config.midi_url);
+    Serial.printf("  ntfy_topic: %s\n", config.ntfy_topic);
+    Serial.printf("  midi_baud: %d\n", config.midi_baud);
+    Serial.printf("  alarm_offset: %d\n", config.alarm_offset_default);
+    Serial.printf("  port_select: %d\n", config.port_select);
+    Serial.printf("  time_24h: %s\n", config.time_24h ? "true" : "false");
+    Serial.printf("  text_wrap: %s\n", config.text_wrap ? "true" : "false");
+    Serial.printf("  ics_poll_min: %d\n", config.ics_poll_min);
+    Serial.printf("  play_duration: %d\n", config.play_duration);
+    Serial.printf("  play_repeat: %d\n", config.play_repeat);
+    Serial.printf("  max_events: %d\n", config.max_events);
+    Serial.printf("  max_desc_bytes: %d\n", config.max_desc_bytes);
+    Serial.printf("  min_free_heap: %d\n", config.min_free_heap);
+    Serial.println("=== END CONFIG ===");
 }
 
 void saveConfig() {

@@ -724,6 +724,22 @@ bool fetchAndUpdate() {
     int total_added = 0;
     int url_count = 0;
     int fail_count = 0;
+    int skip_count = 0;
+    int total_urls = 0;
+
+    // まず総URL数をカウント
+    {
+        char count_buf[512];
+        strlcpy(count_buf, config.ics_url, sizeof(count_buf));
+        char* sp = nullptr;
+        char* tk = strtok_r(count_buf, ",", &sp);
+        while (tk) {
+            while (*tk == ' ') tk++;
+            if (strlen(tk) > 0) total_urls++;
+            tk = strtok_r(nullptr, ",", &sp);
+        }
+    }
+    Serial.printf("ICS URLs configured: %d\n", total_urls);
 
     char* saveptr = nullptr;
     char* token = strtok_r(url_buf, ",", &saveptr);
@@ -742,12 +758,19 @@ bool fetchAndUpdate() {
                 if (mb_between < 50000) {
                     Serial.printf("Skipping URL %d - maxBlock %d < 50KB (need ~45KB for SSL)\n",
                                   url_count, mb_between);
-                    url_count--;  // このURLはカウントしない
+                    skip_count++;
+                    // 残りのURLもスキップとしてカウント
+                    char* remaining = strtok_r(nullptr, ",", &saveptr);
+                    while (remaining) {
+                        while (*remaining == ' ') remaining++;
+                        if (strlen(remaining) > 0) skip_count++;
+                        remaining = strtok_r(nullptr, ",", &saveptr);
+                    }
                     break;
                 }
             }
 
-            Serial.printf("=== Fetching URL %d: %.60s... ===\n", url_count, token);
+            Serial.printf("=== Fetching URL %d/%d: %.60s... ===\n", url_count, total_urls, token);
             int result = doFetchURL(token);
             if (result > 0) {
                 total_added += result;
@@ -762,12 +785,15 @@ bool fetchAndUpdate() {
         token = strtok_r(nullptr, ",", &saveptr);
     }
 
-    Serial.printf("All URLs done: %d URLs, %d total events, %d failures\n",
-                  url_count, event_count, fail_count);
+    Serial.printf("All URLs done: %d/%d fetched, %d failed, %d skipped, %d events\n",
+                  url_count - fail_count, total_urls, fail_count, skip_count, event_count);
 
-    // ── 全URL失敗 → 旧バッファに復帰 ──
-    if (event_count == 0 && fail_count > 0) {
-        Serial.printf("All fetches failed - restoring previous %d events\n", prev_count);
+    // ── URL失敗/スキップあり → 旧バッファに復帰 ──
+    // 一部のURLが失敗・スキップされた場合、不完全なデータを使わず旧データを保持
+    bool incomplete_fetch = (fail_count > 0 || skip_count > 0);
+    if (incomplete_fetch && event_count < prev_count) {
+        Serial.printf("*** Incomplete fetch (fail:%d skip:%d) and events dropped %d->%d - restoring previous ***\n",
+                      fail_count, skip_count, prev_count, event_count);
         events = prev_buf;
         event_count = prev_count;
 
@@ -787,6 +813,21 @@ bool fetchAndUpdate() {
             return false;
         }
 
+        // ヒープ不足でスキップした場合はリブートを検討
+        if (skip_count > 0) {
+            Serial.printf("=== URLs skipped due to heap - proactive restart ===\n");
+            safeReboot();
+        }
+
+        last_fetch = time(nullptr);
+        return false;
+    }
+    // 全URL失敗でイベント0件
+    if (event_count == 0 && (fail_count > 0 || skip_count > 0)) {
+        Serial.printf("All fetches failed/skipped - restoring previous %d events\n", prev_count);
+        events = prev_buf;
+        event_count = prev_count;
+        fetch_fail_count++;
         last_fetch = time(nullptr);
         return false;
     }

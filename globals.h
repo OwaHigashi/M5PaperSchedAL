@@ -165,7 +165,7 @@ void partialRefreshNextLine();
 
 // ui_list.cpp
 void scrollToToday();
-void drawList(bool fast = false, bool skip_push = false, bool highlight_changes = false);
+void drawList(bool fast = false, bool skip_push = false, bool highlight_changes = false, bool clean_refresh = false);
 void updateListCursor(int old_sel, int new_sel);
 
 // ui_detail.cpp
