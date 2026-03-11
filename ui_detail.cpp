@@ -66,7 +66,10 @@ static bool drawWrappedText(String text, int lineWidth, int lineHeight,
             return true;  // 描画しきれない行が残っている
         }
         drawText(line, x, yInOut);
-        if (bold) drawText(line, x + 1, yInOut);
+        if (bold) {
+            drawText(line, x + 1, yInOut);
+            drawText(line, x, yInOut + 1);
+        }
         yInOut += lineHeight;
     }
     return false;  // 全行描画完了
@@ -100,6 +103,7 @@ void drawDetail(int idx, bool fast) {
     }
     drawText(buf, 10, 8);
     drawText(buf, 11, 8);  // bold
+    drawText(buf, 10, 9);  // super bold
 
     // ── アラーム情報 (size 28) ──────────────────────────────────────────
     canvas.setTextSize(28);
@@ -116,6 +120,7 @@ void drawDetail(int idx, bool fast) {
                  alTime.c_str(), offsetStr.c_str(), e.triggered ? "[済]" : "");
         drawText(buf, 10, y);
         drawText(buf, 11, y);  // bold
+        drawText(buf, 10, y + 1);  // super bold
         y += 36;
 
         // MIDI/再生情報 (size 26 — 最小サイズ)
@@ -132,14 +137,17 @@ void drawDetail(int idx, bool fast) {
         extraInfo += " x" + String(rep);
         drawText(extraInfo, 10, y);
         drawText(extraInfo, 11, y);  // bold
+        drawText(extraInfo, 10, y + 1);  // super bold
         y += 34;
     } else {
         drawText("アラーム: なし", 10, y);
         drawText("アラーム: なし", 11, y);  // bold
+        drawText("アラーム: なし", 10, y + 1);  // super bold
         y += 36;
     }
 
-    canvas.drawLine(0, y, 540, y, 8);
+    canvas.drawLine(0, y, 540, y, 12);
+    canvas.drawLine(0, y + 1, 540, y + 1, 12);
     y += 8;
 
     // ── SUMMARY（複数行折り返し、size 30）────────────────────────────────
@@ -174,10 +182,12 @@ void drawDetail(int idx, bool fast) {
         }
         drawText(line, 10, y);
         drawText(line, 11, y);  // bold
+        drawText(line, 10, y + 1);  // super bold
         y += summaryLineH;
     }
 
-    canvas.drawLine(0, y, 540, y, 6);
+    canvas.drawLine(0, y, 540, y, 10);
+    canvas.drawLine(0, y + 1, 540, y + 1, 10);
     y += 8;
 
     // ── DESCRIPTION（折り返し＋\nリテラル改行＋スクロール、size 28）──────
@@ -195,8 +205,9 @@ void drawDetail(int idx, bool fast) {
     canvas.setTextSize(26);
     drawText("タップ:戻る  L/R:スクロール", 10, 910);
     drawText("タップ:戻る  L/R:スクロール", 11, 910);  // bold
-    if (detail_scroll > 0) { drawText("↑", 510, 180); drawText("↑", 511, 180); }
-    if (hasMore)            { drawText("↓", 510, 850); drawText("↓", 511, 850); }
+    drawText("タップ:戻る  L/R:スクロール", 10, 911);  // super bold
+    if (detail_scroll > 0) { drawText("↑", 510, 180); drawText("↑", 511, 180); drawText("↑", 510, 181); }
+    if (hasMore)            { drawText("↓", 510, 850); drawText("↓", 511, 850); drawText("↓", 510, 851); }
 
     unsigned long t0 = millis();
     // スクロール時もGC16を使用（DU4はコントラストが低い）
