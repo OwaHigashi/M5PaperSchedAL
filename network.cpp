@@ -3,6 +3,7 @@
 #include <WiFi.h>
 #include <SD.h>
 #include <esp_task_wdt.h>
+#include <esp_wifi.h>
 
 // ★ HTTPClient完全排除 — 全HTTP通信をWiFiClient/WiFiClientSecure直接操作
 //    HTTPClient内部のString操作がSSLバッファと交互にDRAM mallocされ
@@ -12,8 +13,17 @@ bool connectWiFi() {
     if (strlen(config.wifi_ssid) == 0) return false;
 
     for (int attempt = 1; attempt <= 3; attempt++) {
+        // ★ SSL後にWiFiスタックが不安定になる問題への対策
+        //    attempt 1: 通常リセット
+        //    attempt 2+: WIFI_OFF経由でラジオを完全リセット
         WiFi.disconnect(true);
-        delay(200);
+        if (attempt >= 2) {
+            WiFi.mode(WIFI_OFF);
+            delay(500);
+            Serial.printf("WiFi radio full reset (attempt %d)\n", attempt);
+        } else {
+            delay(200);
+        }
 
         WiFi.mode(WIFI_STA);
         WiFi.begin(config.wifi_ssid, config.wifi_pass);
@@ -23,7 +33,7 @@ bool connectWiFi() {
         while (WiFi.status() != WL_CONNECTED && millis() - t0 < 15000) {
             delay(500);
             Serial.print(".");
-            esp_task_wdt_reset();  // WiFi接続待ち中もWDTフィード
+            esp_task_wdt_reset();
         }
         Serial.println();
 
