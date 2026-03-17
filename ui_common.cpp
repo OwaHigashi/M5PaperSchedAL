@@ -92,7 +92,7 @@ void partialRefreshHeader() {
     uint8_t* buf_ptr = (uint8_t*)canvas.frameBuffer(1);
     if (!buf_ptr) return;
     M5.EPD.WritePartGram4bpp(0, 0, 540, 40, buf_ptr);
-    M5.EPD.UpdateArea(0, 0, 540, 40, UPDATE_MODE_DU4);
+    M5.EPD.UpdateArea(0, 0, 540, 40, UPDATE_MODE_GL16);
     Serial.printf("PARTIAL: header updated %02d:%02d\n", lt.tm_hour, lt.tm_min);
 }
 
