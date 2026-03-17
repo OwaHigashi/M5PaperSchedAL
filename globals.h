@@ -108,6 +108,12 @@ extern unsigned long last_heartbeat_ms;
 // 部分更新用：表示中の「次のイベント」インデックス
 extern int displayed_next_event_idx;
 
+// 部分更新カウンタ（GC16クリーンアップ用）
+extern int partial_refresh_count;
+
+// ヒープ不足スキップ連続回数
+extern int heap_skip_count;
+
 // スイッチ状態
 extern bool sw_l_prev, sw_r_prev, sw_p_prev;
 
@@ -153,6 +159,7 @@ bool parseAlarmMarker(const char* s_raw, bool is_summary, int& off, bool& found,
                       int& duration_sec, int& repeat_count);
 void sortEvents();
 void trimEventsAroundToday(int maxEvents);
+void installMbedTLSPsramAllocator();
 bool fetchAndUpdate();
 void safeReboot();
 
