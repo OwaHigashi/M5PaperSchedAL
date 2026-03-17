@@ -366,8 +366,8 @@ void loop() {
                 drawList();
             } else {
                 partial_refresh_count++;
-                // ★ 5回に1回（約5分ごと）GC16フルリフレッシュで灰色ゴースト除去
-                if (partial_refresh_count >= 5) {
+                // ★ 10回に1回（約10分ごと）GC16フルリフレッシュで灰色ゴースト除去
+                if (partial_refresh_count >= 10) {
                     partial_refresh_count = 0;
                     Serial.println("AUTO-REFRESH: periodic GC16 cleanup");
                     drawList();  // GC16 full refresh
@@ -397,7 +397,13 @@ void loop() {
                 }
 
                 // WiFi未接続なら再接続
-                if (WiFi.status() != WL_CONNECTED) connectWiFi();
+                if (WiFi.status() != WL_CONNECTED) {
+                    if (!connectWiFi()) {
+                        // ★ WiFi再接続失敗 → 次回poll_intervalまでスキップ（連続リトライ防止）
+                        Serial.println("WiFi reconnect failed, deferring next fetch");
+                        last_fetch = now;
+                    }
+                }
 
                 // フェッチ（ダブルバッファ: 失敗しても旧データ保持）
                 if (WiFi.status() == WL_CONNECTED) {
