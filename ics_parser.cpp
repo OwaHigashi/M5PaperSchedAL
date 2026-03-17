@@ -1,11 +1,41 @@
 #include "globals.h"
 #include <WiFiClientSecure.h>
 #include <mbedtls/base64.h>
+#include <mbedtls/platform.h>
+#include <esp_heap_caps.h>
 #include <time.h>
 #include <ctype.h>
 
 // ★ v029: ics_parser内のString完全排除 — char[]固定バッファのみ使用
 //    DRAM断片化の最大原因だった動的String確保/解放を根絶
+
+//==============================================================================
+// ★ mbedTLS PSRAM アロケータ
+//   SDKデフォルトはINTERNAL_MEM_ALLOC（内部DRAM専用 → ~50KB消費で断片化）
+//   PSRAM対応アロケータに差し替えることで、SSLバッファをPSRAMに配置
+//==============================================================================
+static void* psram_calloc(size_t n, size_t size) {
+    // まずPSRAMから確保を試み、失敗したら内部RAMにフォールバック
+    void* p = heap_caps_calloc(n, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!p) {
+        p = heap_caps_calloc(n, size, MALLOC_CAP_8BIT);
+    }
+    return p;
+}
+
+static void psram_free(void* ptr) {
+    heap_caps_free(ptr);
+}
+
+static bool mbedtls_psram_installed = false;
+
+void installMbedTLSPsramAllocator() {
+    if (!mbedtls_psram_installed) {
+        mbedtls_platform_set_calloc_free(psram_calloc, psram_free);
+        mbedtls_psram_installed = true;
+        Serial.println("[SSL] mbedTLS allocator -> PSRAM");
+    }
+}
 
 //==============================================================================
 // パーサー用バッファサイズ定数
@@ -679,6 +709,9 @@ static int doFetchURL(const char* url_str) {
 
 
 bool fetchAndUpdate() {
+    // ★ mbedTLSのメモリ確保先をPSRAMに変更（初回のみ）
+    installMbedTLSPsramAllocator();
+
     Serial.printf("Fetching ICS...%s (heap:%d maxBlock:%d WiFi:%d RSSI:%d fails:%d events:%d)\n",
                   debug_fetch ? " [DEBUG 30s]" : "",
                   ESP.getFreeHeap(), ESP.getMaxAllocHeap(), WiFi.status(), WiFi.RSSI(),
@@ -752,21 +785,33 @@ bool fetchAndUpdate() {
         if (strlen(token) > 0) {
             url_count++;
 
-            // URL間ヒープチェック: SSL接続に~45KB必要。不足ならスキップ
+            // URL間ヒープチェック
+            // ★ PSRAMアロケータ有効時はSSLバッファがPSRAMに行くため閾値を大幅引き下げ
+            //    フォールバック: 内部ヒープ枯渇時のみWiFi再接続で回復を試みる
             if (url_count > 1) {
                 size_t mb_between = ESP.getMaxAllocHeap();
-                if (mb_between < 50000) {
-                    Serial.printf("Skipping URL %d - maxBlock %d < 50KB (need ~45KB for SSL)\n",
-                                  url_count, mb_between);
-                    skip_count++;
-                    // 残りのURLもスキップとしてカウント
-                    char* remaining = strtok_r(nullptr, ",", &saveptr);
-                    while (remaining) {
-                        while (*remaining == ' ') remaining++;
-                        if (strlen(remaining) > 0) skip_count++;
-                        remaining = strtok_r(nullptr, ",", &saveptr);
+                size_t heap_between = ESP.getFreeHeap();
+                Serial.printf("URL %d: pre-check heap=%d maxBlock=%d psram=%dKB\n",
+                              url_count, heap_between, mb_between, ESP.getFreePsram() / 1024);
+                if (heap_between < 40000) {
+                    // 内部ヒープ自体が40KB未満 → WiFi再接続で回復試行
+                    Serial.printf("URL %d: heap %d < 40KB - WiFi restart to recover...\n",
+                                  url_count, heap_between);
+                    WiFi.disconnect(true);
+                    delay(200);
+                    if (!connectWiFi()) {
+                        Serial.println("WiFi reconnect failed");
+                        skip_count++;
+                        char* remaining = strtok_r(nullptr, ",", &saveptr);
+                        while (remaining) {
+                            while (*remaining == ' ') remaining++;
+                            if (strlen(remaining) > 0) skip_count++;
+                            remaining = strtok_r(nullptr, ",", &saveptr);
+                        }
+                        break;
                     }
-                    break;
+                    Serial.printf("After WiFi restart: heap=%d maxBlock=%d\n",
+                                  ESP.getFreeHeap(), ESP.getMaxAllocHeap());
                 }
             }
 
@@ -800,8 +845,8 @@ bool fetchAndUpdate() {
         fetch_fail_count++;
         size_t mb = ESP.getMaxAllocHeap();
 
-        if (mb < 38000 && fetch_fail_count >= 3) {
-            Serial.printf("=== %d failures + maxBlock %d < 38KB - restart requested ===\n",
+        if (mb < 20000 && fetch_fail_count >= 3) {
+            Serial.printf("=== %d failures + maxBlock %d < 20KB - restart requested ===\n",
                           fetch_fail_count, mb);
             safeReboot();
         } else if (fetch_fail_count >= 3) {
@@ -813,10 +858,16 @@ bool fetchAndUpdate() {
             return false;
         }
 
-        // ヒープ不足でスキップした場合はリブートを検討
+        // ヒープ不足でスキップした場合
         if (skip_count > 0) {
-            Serial.printf("=== URLs skipped due to heap - proactive restart ===\n");
-            safeReboot();
+            heap_skip_count++;
+            Serial.printf("=== URLs skipped due to heap (skip streak: %d) ===\n", heap_skip_count);
+            // ★ 3回連続ヒープスキップでリブート（毎回リブートするループを防止）
+            if (heap_skip_count >= 3) {
+                Serial.println("=== Too many heap skips - proactive restart ===");
+                heap_skip_count = 0;
+                safeReboot();
+            }
         }
 
         last_fetch = time(nullptr);
@@ -837,6 +888,7 @@ bool fetchAndUpdate() {
     trimEventsAroundToday(config.max_events);
 
     fetch_fail_count = 0;
+    heap_skip_count = 0;
     size_t mb = ESP.getMaxAllocHeap();
     Serial.printf("Fetched %d events from %d URLs (heap:%d maxBlock:%d next:%dmin)\n",
                   event_count, url_count, ESP.getFreeHeap(), mb,

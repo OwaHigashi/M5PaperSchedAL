@@ -346,6 +346,7 @@ void loop() {
     if (ui_state == UI_DETAIL && (millis() - last_interaction_ms) > 30000) {
         Serial.println("[AUTO] Detail timeout 30s -> back to list");
         ui_state = UI_LIST;
+        partial_refresh_count = 0;
         waitEPDReady();
         drawList(false, false, false, true);
     }
@@ -361,11 +362,20 @@ void loop() {
             scrollToToday();
             if (page_start != old_page) {
                 Serial.printf("AUTO-REFRESH: page %d->%d (full redraw)\n", old_page, page_start);
+                partial_refresh_count = 0;
                 drawList();
             } else {
-                // ページ同じ → ヘッダー時刻 + 次イベントアンダーラインの部分更新のみ
-                partialRefreshHeader();
-                partialRefreshNextLine();
+                partial_refresh_count++;
+                // ★ 5回に1回（約5分ごと）GC16フルリフレッシュで灰色ゴースト除去
+                if (partial_refresh_count >= 5) {
+                    partial_refresh_count = 0;
+                    Serial.println("AUTO-REFRESH: periodic GC16 cleanup");
+                    drawList();  // GC16 full refresh
+                } else {
+                    // ページ同じ → ヘッダー時刻 + 次イベントアンダーラインの部分更新のみ
+                    partialRefreshHeader();
+                    partialRefreshNextLine();
+                }
             }
         }
     }
@@ -394,7 +404,7 @@ void loop() {
                     int before = event_count;
                     bool changed = fetchAndUpdate();
                     Serial.printf("Periodic fetch: %d -> %d events\n", before, event_count);
-                    if (changed && ui_state == UI_LIST) { scrollToToday(); drawList(false, false, true); }
+                    if (changed && ui_state == UI_LIST) { scrollToToday(); partial_refresh_count = 0; drawList(false, false, true); }
                 }
             }
         }
