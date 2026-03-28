@@ -19,10 +19,10 @@ bool connectWiFi() {
         WiFi.disconnect(true);
         if (attempt >= 2) {
             WiFi.mode(WIFI_OFF);
-            delay(500);
+            delay(300);
             Serial.printf("WiFi radio full reset (attempt %d)\n", attempt);
         } else {
-            delay(200);
+            delay(100);
         }
 
         WiFi.mode(WIFI_STA);
@@ -30,7 +30,7 @@ bool connectWiFi() {
 
         Serial.printf("Connecting to WiFi (attempt %d/3)", attempt);
         uint32_t t0 = millis();
-        while (WiFi.status() != WL_CONNECTED && millis() - t0 < 15000) {
+        while (WiFi.status() != WL_CONNECTED && millis() - t0 < 7000) {
             delay(500);
             Serial.print(".");
             esp_task_wdt_reset();
