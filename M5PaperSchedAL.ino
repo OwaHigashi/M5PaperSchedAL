@@ -365,13 +365,15 @@ void loop() {
                 partial_refresh_count = 0;
                 drawList();
             } else {
-                partial_refresh_count++;
-                // ★ 10回に1回（約10分ごと）GC16フルリフレッシュで灰色ゴースト除去
-                if (partial_refresh_count >= 10) {
-                    partial_refresh_count = 0;
-                    Serial.println("AUTO-REFRESH: periodic GC16 cleanup");
+                // ★ 毎時0分にGC16フルリフレッシュで灰色ゴースト除去（時報代わり）
+                struct tm tmNow;
+                localtime_r(&now_t, &tmNow);
+                if (tmNow.tm_min == 0 && partial_refresh_count == 0) {
+                    partial_refresh_count = 1;  // 同じ0分内で再実行しないフラグ
+                    Serial.printf("AUTO-REFRESH: hourly GC16 cleanup (%02d:00)\n", tmNow.tm_hour);
                     drawList();  // GC16 full refresh
                 } else {
+                    if (tmNow.tm_min != 0) partial_refresh_count = 0;  // 0分が過ぎたらリセット
                     // ページ同じ → ヘッダー時刻 + 次イベントアンダーラインの部分更新のみ
                     partialRefreshHeader();
                     partialRefreshNextLine();
