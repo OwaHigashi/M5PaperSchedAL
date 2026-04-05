@@ -193,16 +193,9 @@ bool parseAlarmMarker(const char* s_raw, bool is_summary, int& off, bool& found,
     repeat_count = -1;
     int maxOff = -1;
 
-    if (is_summary) {
-        int exclamCount = 0;
-        for (int i = 0; i < sLen; i++) {
-            if (s[i] == '!') exclamCount++;
-        }
-        if (exclamCount == 1) {
-            found = true;
-            return true;
-        }
-    }
+    // ── 統一ロジック: summary/description 問わず同じ判定 ──
+    // 1) !...! ペアがあれば詳細パラメータを解析
+    // 2) 閉じペアのない単独 ! があればデフォルトオフセットでアラームON
 
     int searchStart = 0;
     while (searchStart < sLen) {
@@ -212,8 +205,9 @@ bool parseAlarmMarker(const char* s_raw, bool is_summary, int& off, bool& found,
 
         const char* ePtr = strchr(s + p + 1, '!');
         if (!ePtr) {
-            if (is_summary) { found = true; return true; }
-            break;
+            // 閉じ ! なし → 単独 ! → デフォルトオフセットでアラームON
+            found = true;
+            return true;
         }
         int endExcl = ePtr - s;
 
@@ -647,15 +641,26 @@ static int doFetchURL(const char* url_str) {
         snprintf(authLine, sizeof(authLine), "Authorization: Basic %s\r\n", b64);
     }
 
+    // ── キャッシュバイパス用タイムスタンプ付きパス ──
+    static char path_nocache[300];
+    {
+        // URL に既存の '?' があるかチェック
+        const char* qmark = strchr(path, '?');
+        snprintf(path_nocache, sizeof(path_nocache), "%s%c_t=%ld",
+                 path, qmark ? '&' : '?', (long)time(nullptr));
+    }
+
     static char request[1024];
     int reqLen = snprintf(request, sizeof(request),
         "GET %s HTTP/1.1\r\n"
         "Host: %s\r\n"
         "%s"
+        "Cache-Control: no-cache, no-store\r\n"
+        "Pragma: no-cache\r\n"
         "Connection: close\r\n"
         "User-Agent: M5Paper/1.0\r\n"
         "\r\n",
-        path, host, authLine);
+        path_nocache, host, authLine);
 
     client.write((uint8_t*)request, reqLen);
     Serial.printf("HTTP request sent (%d bytes), waiting for response...\n", reqLen);
@@ -893,6 +898,21 @@ bool fetchAndUpdate() {
     Serial.printf("Fetched %d events from %d URLs (heap:%d maxBlock:%d next:%dmin)\n",
                   event_count, url_count, ESP.getFreeHeap(), mb,
                   debug_fetch ? 0 : config.ics_poll_min);
+
+    // ★ アラーム状態サマリー（データ更新確認用）
+    {
+        int alarm_count = 0;
+        for (int i = 0; i < event_count; i++) {
+            if (events[i].has_alarm) {
+                alarm_count++;
+                struct tm st; localtime_r(&events[i].start, &st);
+                Serial.printf("  ALARM[%d]: %02d/%02d %02d:%02d '%s' off=%dmin trig=%d\n",
+                              i, st.tm_mon+1, st.tm_mday, st.tm_hour, st.tm_min,
+                              events[i].summary(), events[i].offset_min, events[i].triggered);
+            }
+        }
+        Serial.printf("  Total alarms: %d / %d events\n", alarm_count, event_count);
+    }
 
     if (mb < 38000) {
         Serial.printf("=== maxBlock %d < 38KB - proactive restart requested ===\n", mb);
