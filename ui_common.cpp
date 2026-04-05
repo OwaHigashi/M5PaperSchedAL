@@ -77,11 +77,19 @@ void partialRefreshHeader() {
     canvas.drawString(buf, 10, 8);
     canvas.drawString(buf, 11, 8);
 
-    // WiFi・SD状態
+    // WiFi・SD状態 + 最終更新時刻
     canvas.setTextSize(22);
+    canvas.setTextColor(10);  // 薄めの色で控えめに表示
+    if (last_fetch > 1000000000) {
+        struct tm ft; localtime_r(&last_fetch, &ft);
+        char fbuf[32];
+        snprintf(fbuf, sizeof(fbuf), "upd %02d:%02d", ft.tm_hour, ft.tm_min);
+        canvas.drawString(fbuf, 310, 10);
+    }
+    canvas.setTextColor(COL_HEADER_TEXT);
     String status = (WiFi.status() == WL_CONNECTED) ? "WiFi:OK" : "WiFi:NG";
     if (!sd_healthy) status += " SD:NG";
-    canvas.drawString(status.c_str(), 400, 10);
+    canvas.drawString(status.c_str(), 430, 10);
 
     // ハートビート状態も反映
     if (heartbeat_visible) {
