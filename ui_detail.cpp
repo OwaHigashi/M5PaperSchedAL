@@ -82,6 +82,14 @@ static bool drawWrappedText(String text, int lineWidth, int lineHeight,
 void drawDetail(int idx, bool fast) {
     if (idx < 0 || idx >= event_count) return;
 
+    // ★ 詳細画面に入るときはパネルを完全リフレッシュ
+    //    一覧画面の部分更新による残像で文字が薄く見える問題を解消
+    if (!fast) {
+        waitEPDReady();
+        M5.EPD.Clear(true);
+        waitEPDReady();
+    }
+
     canvas.fillCanvas(COL_DETAIL_BG);
     canvas.setTextColor(COL_DETAIL_TEXT);
     canvas.setTextDatum(TL_DATUM);
