@@ -412,7 +412,7 @@ void loop() {
                     int before = event_count;
                     bool changed = fetchAndUpdate();
                     Serial.printf("Periodic fetch: %d -> %d events\n", before, event_count);
-                    if (changed && ui_state == UI_LIST) { scrollToToday(); partial_refresh_count = 0; drawList(false, false, true); }
+                    if (changed && ui_state == UI_LIST) { scrollToToday(); partial_refresh_count = 0; drawList(false, false, false, true); }
                 }
             }
         }
