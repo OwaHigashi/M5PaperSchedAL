@@ -401,7 +401,11 @@ static void registerEvent(const char* dtstart_raw, const char* summary, const ch
     time_t st = 0;
     bool is_allday = false;
     if (!parseDT(dtstart_raw, st, is_allday)) return;
-    if (st <= now - 86400 || st >= now + 30 * 86400) return;
+    // 過去ウィンドウ: 7日前まで取り込む
+    //   trimEventsAroundToday() が過去最大10件まで表示保持するため、
+    //   24h 固定だと「画面に残っているのに再fetchで取り込まれず、編集が反映されない」
+    //   という状態が発生する。表示されうる過去イベントは必ず再パースする。
+    if (st <= now - 7 * 86400 || st >= now + 30 * 86400) return;
 
     int off = 0;
     bool hasAL = false;
@@ -919,32 +923,10 @@ bool fetchAndUpdate() {
         safeReboot();
     }
 
-    // ★ 画面表示テキスト比較
-    bool display_changed = displayContentChanged();
-
-    if (display_changed) {
-        Serial.printf("Display content changed (%d->%d items)\n",
-                      prev_count, event_count);
-    } else if (prev_count != event_count) {
-        Serial.printf("Events data changed but display unaffected (%d->%d items) - skip redraw\n",
-                      prev_count, event_count);
-    } else {
-        bool data_changed = false;
-        int cmp_count = min(prev_count, event_count);
-        for (int i = 0; i < cmp_count; i++) {
-            if (prev_buf[i].start != events[i].start ||
-                strcmp(prev_buf[i].text, events[i].text) != 0) {
-                data_changed = true;
-                break;
-            }
-        }
-        if (data_changed) {
-            Serial.printf("Events data changed but display unaffected (%d->%d items) - skip redraw\n",
-                          prev_count, event_count);
-        } else {
-            Serial.printf("Events unchanged (%d items)\n", event_count);
-        }
-    }
+    // ★ フェッチ成功時は常に再描画する（変更検出は不正確で「!」追加等を見逃すため）
+    //    定期fetchは数分に1回なのでGC16フラッシュ頻度は許容範囲
+    Serial.printf("Fetch complete (%d->%d items) - always redraw\n",
+                  prev_count, event_count);
     last_fetch = time(nullptr);
-    return display_changed;
+    return true;
 }
