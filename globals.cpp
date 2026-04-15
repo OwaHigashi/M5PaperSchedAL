@@ -23,6 +23,11 @@ int settings_cursor = 0;
 int playing_event = -1;
 int playing_alarm_idx = -1;     // 発火中アラームのslot index
 int play_repeat_remaining = 0;
+
+// 起動後に1回でも fetch が完走したか
+//   false: 初回fetch → 過去の!付き予定を一斉発火させないため従来の10分グレース
+//   true : 通常fetch → 後付け!でも開始翌日になるまで鳴らす
+bool initial_fetch_done = false;
 unsigned long play_start_ms = 0;
 int play_duration_ms = 0;
 
