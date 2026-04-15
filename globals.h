@@ -165,6 +165,7 @@ void safeReboot();
 
 // ui_common.cpp
 void drawText(const String& s, int x, int y);
+void drawTextBold(const String& s, int x, int y, int level = 2);
 void saveScreenshot();
 String formatTime(int hour, int minute);
 void partialRefreshHeader();

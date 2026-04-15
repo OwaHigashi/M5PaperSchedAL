@@ -7,6 +7,14 @@ void drawText(const String& s, int x, int y) {
     canvas.drawString(s, x, y);
 }
 
+// 太字描画: level 0=通常, 1=(x+1), 2=(x+1,y+1), 3=(x+1,y+1,x+1y+1)
+void drawTextBold(const String& s, int x, int y, int level) {
+    canvas.drawString(s, x, y);
+    if (level >= 1) canvas.drawString(s, x + 1, y);
+    if (level >= 2) canvas.drawString(s, x, y + 1);
+    if (level >= 3) canvas.drawString(s, x + 1, y + 1);
+}
+
 // スクリーンショットをPGM形式でSDに保存
 void saveScreenshot() {
     waitEPDReady();
