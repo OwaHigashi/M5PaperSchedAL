@@ -149,21 +149,33 @@ String simplifyHtml(const String& s) {
     return result;
 }
 
-// 4バイト文字（絵文字）と制御文字（0x00-0x1F、ただしタブ・改行は許可）を除去
+// 4バイト文字（絵文字）は '?' に置換、制御文字（0x00-0x1F、ただしタブ以外）は除去
+// ※削除ではなく置換にする理由: 絵文字のみのタイトルが空文字になり、[終日]予定が
+//   無地表示になる不具合を防ぐため。連続する絵文字は1つの '?' にまとめる。
 String removeUnsupportedChars(const String& s) {
     String result;
+    bool lastWasEmojiPlaceholder = false;
     int i = 0;
     while (i < (int)s.length()) {
         uint8_t c = s[i];
         int bytes = utf8CharBytes(c);
-        if (bytes == 4) { i += bytes; continue; }       // 絵文字スキップ
+        if (bytes == 4) {
+            if (!lastWasEmojiPlaceholder) {
+                result += '?';
+                lastWasEmojiPlaceholder = true;
+            }
+            i += bytes;
+            continue;
+        }
         if (bytes == 1 && c < 0x20 && c != '\t') {       // 制御文字スキップ
-            i++; continue;
+            i++;
+            continue;
         }
         for (int j = 0; j < bytes && (i + j) < (int)s.length(); j++) {
             result += s[i + j];
         }
         i += bytes;
+        lastWasEmojiPlaceholder = false;
     }
     return result;
 }
