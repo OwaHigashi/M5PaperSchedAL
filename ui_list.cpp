@@ -61,9 +61,12 @@ static void drawEventRow(int evtIdx, int y, bool highlighted, int nextEventIdx) 
     struct tm st;
     localtime_r(&events[evtIdx].start, &st);
 
+    String summary = removeUnsupportedChars(events[evtIdx].summary());
+
     String timeStr;
     if (events[evtIdx].is_allday) {
-        timeStr = "[終日]";
+        // タイトルが空の終日予定は [終日] ラベルも出さない（幽霊行回避）
+        timeStr = summary.length() > 0 ? "[終日]" : "";
     } else {
         timeStr = formatTime(st.tm_hour, st.tm_min);
     }
@@ -79,7 +82,6 @@ static void drawEventRow(int evtIdx, int y, bool highlighted, int nextEventIdx) 
         showAlarmMark = anyPending;
     }
 
-    String summary = removeUnsupportedChars(events[evtIdx].summary());
     int maxWidth = config.text_wrap ? 24 : 28;
     String dispSummary = utf8Substring(summary, maxWidth);
 
