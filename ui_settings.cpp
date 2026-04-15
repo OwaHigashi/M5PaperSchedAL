@@ -236,6 +236,7 @@ void handleSettingsSelect() {
             play_repeat_remaining = rep;
             play_start_ms = millis();
             playing_event = -1;
+            playing_alarm_idx = -1;
             if (startMidiPlayback(config.midi_file)) {
                 ui_state = UI_PLAYING;
                 canvas.fillCanvas(COL_SETTINGS_BG); canvas.setTextColor(COL_SETTINGS_TEXT);

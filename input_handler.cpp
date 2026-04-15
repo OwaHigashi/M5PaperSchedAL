@@ -274,17 +274,25 @@ void checkAlarms() {
 
         int pending = 0;
         for (int i = 0; i < event_count; i++) {
-            if (!events[i].has_alarm || events[i].triggered) continue;
+            if (!events[i].has_alarm) continue;
+            bool anyPending = false;
+            for (int k = 0; k < events[i].alarm_count; k++) {
+                if (!events[i].triggered[k]) { anyPending = true; break; }
+            }
+            if (!anyPending) continue;
             pending++;
-            struct tm at, st;
-            localtime_r(&events[i].alarm_time, &at);
-            localtime_r(&events[i].start, &st);
-            long remain = (long)(events[i].alarm_time - now);
-            Serial.printf("  [%d] %s\n", i, events[i].summary());
-            Serial.printf("      event:%02d/%02d %02d:%02d  alarm:%02d/%02d %02d:%02d  off:%dmin  remain:%lds\n",
-                          st.tm_mon+1, st.tm_mday, st.tm_hour, st.tm_min,
-                          at.tm_mon+1, at.tm_mday, at.tm_hour, at.tm_min,
-                          events[i].offset_min, remain);
+            struct tm st; localtime_r(&events[i].start, &st);
+            Serial.printf("  [%d] %s  event:%02d/%02d %02d:%02d\n",
+                          i, events[i].summary(),
+                          st.tm_mon+1, st.tm_mday, st.tm_hour, st.tm_min);
+            for (int k = 0; k < events[i].alarm_count; k++) {
+                if (events[i].triggered[k]) continue;
+                struct tm at; localtime_r(&events[i].alarm_time[k], &at);
+                long remain = (long)(events[i].alarm_time[k] - now);
+                Serial.printf("      AL%d: %02d/%02d %02d:%02d  off:%dmin  remain:%lds\n",
+                              k, at.tm_mon+1, at.tm_mday, at.tm_hour, at.tm_min,
+                              events[i].offset_min[k], remain);
+            }
             if (strlen(events[i].midi_file) > 0)
                 Serial.printf("      midi:%s (%s)\n", events[i].midi_file, events[i].midi_is_url ? "URL" : "SD");
         }
@@ -296,45 +304,61 @@ void checkAlarms() {
 
     // アラーム発火チェック
     for (int i = 0; i < event_count; i++) {
-        if (events[i].has_alarm && !events[i].triggered && events[i].alarm_time <= now) {
-            Serial.printf("\n*** ALARM FIRING! ***\n");
-            Serial.printf("  Event: %s\n", events[i].summary());
-
-            // ntfy通知
-            {
-                struct tm st; localtime_r(&events[i].start, &st);
-                char notifyMsg[200];
-                snprintf(notifyMsg, sizeof(notifyMsg), "%02d:%02d %s",
-                         st.tm_hour, st.tm_min, events[i].summary());
-                sendNtfyNotification("M5Paper Alarm", notifyMsg);
+        if (!events[i].has_alarm) continue;
+        int fireSlot = -1;
+        for (int k = 0; k < events[i].alarm_count; k++) {
+            if (!events[i].triggered[k] && events[i].alarm_time[k] <= now) {
+                fireSlot = k;
+                break;
             }
-
-            playing_event = i;
-
-            int dur = events[i].play_duration_sec;
-            if (dur < 0) dur = config.play_duration;
-            play_duration_ms = dur * 1000;
-
-            int rep = events[i].play_repeat;
-            if (rep < 0) rep = config.play_repeat;
-            if (rep < 1) rep = 1;
-            play_repeat_remaining = rep;
-
-            Serial.printf("  Duration: %s, Repeat: %d\n",
-                          dur == 0 ? "1song" : (String(dur) + "sec").c_str(), play_repeat_remaining);
-
-            String midiPath = getMidiPath(i);
-            waitEPDReady();
-            Serial.printf("  MIDI: %s (exists:%s)\n", midiPath.c_str(), SD.exists(midiPath.c_str()) ? "Y" : "N");
-
-            play_start_ms = millis();
-            if (startMidiPlayback(midiPath.c_str())) {
-                ui_state = UI_PLAYING;
-                drawPlaying(i);
-            } else {
-                events[i].triggered = true;
-            }
-            break;
         }
+        if (fireSlot < 0) continue;
+
+        Serial.printf("\n*** ALARM FIRING! *** (slot %d, off=%dmin)\n",
+                      fireSlot, events[i].offset_min[fireSlot]);
+        Serial.printf("  Event: %s\n", events[i].summary());
+
+        // ntfy通知
+        {
+            struct tm st; localtime_r(&events[i].start, &st);
+            char notifyMsg[200];
+            int off = events[i].offset_min[fireSlot];
+            const char* suffix = "";
+            char offBuf[32]; offBuf[0] = '\0';
+            if (off > 0)      snprintf(offBuf, sizeof(offBuf), " (%d分前)", off);
+            else if (off < 0) snprintf(offBuf, sizeof(offBuf), " (%d分後)", -off);
+            (void)suffix;
+            snprintf(notifyMsg, sizeof(notifyMsg), "%02d:%02d %s%s",
+                     st.tm_hour, st.tm_min, events[i].summary(), offBuf);
+            sendNtfyNotification("M5Paper Alarm", notifyMsg);
+        }
+
+        playing_event = i;
+        playing_alarm_idx = fireSlot;
+
+        int dur = events[i].play_duration_sec;
+        if (dur < 0) dur = config.play_duration;
+        play_duration_ms = dur * 1000;
+
+        int rep = events[i].play_repeat;
+        if (rep < 0) rep = config.play_repeat;
+        if (rep < 1) rep = 1;
+        play_repeat_remaining = rep;
+
+        Serial.printf("  Duration: %s, Repeat: %d\n",
+                      dur == 0 ? "1song" : (String(dur) + "sec").c_str(), play_repeat_remaining);
+
+        String midiPath = getMidiPath(i);
+        waitEPDReady();
+        Serial.printf("  MIDI: %s (exists:%s)\n", midiPath.c_str(), SD.exists(midiPath.c_str()) ? "Y" : "N");
+
+        play_start_ms = millis();
+        if (startMidiPlayback(midiPath.c_str())) {
+            ui_state = UI_PLAYING;
+            drawPlaying(i);
+        } else {
+            events[i].triggered[fireSlot] = true;
+        }
+        break;
     }
 }

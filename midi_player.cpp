@@ -106,9 +106,17 @@ void stopMidiPlayback() {
 void finishAlarm() {
     stopMidiPlayback();
     if (playing_event >= 0 && playing_event < event_count) {
-        events[playing_event].triggered = true;
+        if (playing_alarm_idx >= 0 && playing_alarm_idx < events[playing_event].alarm_count) {
+            events[playing_event].triggered[playing_alarm_idx] = true;
+        } else {
+            // フォールバック: スロット不明なら全アラームを既発火扱い
+            for (int k = 0; k < events[playing_event].alarm_count; k++) {
+                events[playing_event].triggered[k] = true;
+            }
+        }
     }
     playing_event = -1;
+    playing_alarm_idx = -1;
     play_repeat_remaining = 0;
     play_duration_ms = 0;
     ui_state = UI_LIST;

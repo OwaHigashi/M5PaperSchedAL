@@ -6,7 +6,7 @@
 //==============================================================================
 // ビルドバージョン (※コード更新時はここを変更)
 //==============================================================================
-#define BUILD_VERSION "031"
+#define BUILD_VERSION "032"
 
 //==============================================================================
 // ピン定義
@@ -28,6 +28,7 @@
 #define TZ_JST                  "JST-9"
 
 #define MAX_EVENTS              300
+#define MAX_ALARMS_PER_EVENT    6       // 1イベントあたりの最大アラーム数
 #define ITEMS_PER_PAGE          12
 #define SD_CHECK_INTERVAL_MS    300000  // 5分
 #define MIN_HEAP_FOR_FETCH      20000   // ICSフェッチ前の最低ヒープ(byte) ※String排除後は低くてOK
@@ -62,16 +63,20 @@ struct Config {
 
 struct EventItem {
     time_t start;
-    time_t alarm_time;
-    int offset_min;
     char text[4000];            // summary \0 description \0
     char midi_file[64];
     bool midi_is_url;
     bool has_alarm;
-    bool triggered;
     bool is_allday;
     int play_duration_sec;      // 0=1曲 -1=設定値使用
     int play_repeat;            // -1=設定値使用
+
+    // ── 複数アラーム対応 ──
+    //   !-25,-15,-5! のように 1 イベントに最大 MAX_ALARMS_PER_EVENT 個指定可能
+    int alarm_count;                            // 有効なアラーム数 (0..MAX_ALARMS_PER_EVENT)
+    int offset_min[MAX_ALARMS_PER_EVENT];       // 各アラームのオフセット(分) ＋=前 −=後
+    time_t alarm_time[MAX_ALARMS_PER_EVENT];    // 各アラームの絶対時刻
+    bool triggered[MAX_ALARMS_PER_EVENT];       // 発火済みフラグ
 
     // summary = text先頭（最初の\0まで）
     const char* summary() const { return text; }
