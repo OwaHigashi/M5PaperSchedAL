@@ -8,18 +8,20 @@ void drawSettings(bool fast) {
     canvas.setTextColor(COL_SETTINGS_TEXT);
     canvas.setTextDatum(TL_DATUM);
 
-    canvas.setTextSize(26);
-    drawText("=== 設定 ===", 10, 8);
+    canvas.setTextSize(30);
+    drawText("=== 設定 ===", 10, 6);
+    drawText("=== 設定 ===", 11, 6);  // bold
 
-    canvas.setTextSize(22);
-    int y = 45;
-    int rowH = 50;
+    canvas.setTextSize(26);
+    int y = 46;
+    int rowH = 60;
 
     static const char* labels[] = {
-        "Debug Fetch", "WiFi SSID", "WiFi Pass", "ICS URL", "ICS User", "ICS Pass",
+        "ICS Update", "Debug Fetch", "WiFi SSID", "WiFi Pass",
+        "ICS URL", "ICS User", "ICS Pass",
         "MIDI File", "MIDI URL", "MIDI Baud", "Port", "Alarm Offset",
         "Time Format", "Text Display", "ICS Poll", "Play Duration",
-        "Play Repeat", "Notify Topic", "Notify Test", "ICS Update",
+        "Play Repeat", "Notify Topic", "Notify Test",
         "Sound Test", "Save & Exit"
     };
 
@@ -27,7 +29,7 @@ void drawSettings(bool fast) {
     static const int dur_values[] = {0, 5, 10, 15, 20};
     static const int dur_count = 5;
 
-    int maxVisible = (895 - y) / rowH;
+    int maxVisible = (890 - y) / rowH;
 
     for (int n = 0; n < maxVisible; n++) {
         int i = settings_cursor + n;
@@ -35,9 +37,10 @@ void drawSettings(bool fast) {
 
         if (n == 0) canvas.fillRect(0, y, 540, rowH, COL_SETTINGS_CURSOR);
 
-        canvas.setTextSize(22);
+        canvas.setTextSize(26);
         String val;
         switch (i) {
+            case SET_ICS_UPDATE: val = "[実行]"; break;
             case SET_DEBUG_FETCH: val = debug_fetch ? "ON (30s)" : "OFF"; break;
             case SET_WIFI_SSID: val = config.wifi_ssid; break;
             case SET_WIFI_PASS: val = strlen(config.wifi_pass) > 0 ? "****" : "(empty)"; break;
@@ -63,35 +66,41 @@ void drawSettings(bool fast) {
             case SET_PLAY_REPEAT: val = String(config.play_repeat) + "回"; break;
             case SET_NTFY_TOPIC: val = strlen(config.ntfy_topic) > 0 ? config.ntfy_topic : "(empty)"; break;
             case SET_NTFY_TEST: val = "[実行]"; break;
-            case SET_ICS_UPDATE: val = "[実行]"; break;
             case SET_SOUND_TEST: val = "[実行]"; break;
             case SET_SAVE_EXIT:  val = "[実行]"; break;
         }
 
-        drawText(String(labels[i]) + ":", 10, y + 3);
-        drawText(val, 10, y + 26);
+        String label = String(labels[i]) + ":";
+        drawText(label, 10, y + 2);
+        drawText(label, 11, y + 2);  // bold
+        drawText(val, 10, y + 30);
+        drawText(val, 11, y + 30);  // bold
         y += rowH;
     }
 
     // ナビゲーションボタン
     int navY = 900;
-    int navH = 48;
-    canvas.setTextSize(22);
+    int navH = 50;
+    canvas.setTextSize(26);
 
     canvas.drawRect(5, navY, 130, navH, COL_SETTINGS_BTN);
-    canvas.drawString("<<先頭", 25, navY + 12);
+    drawText("<<先頭", 20, navY + 10);
+    drawText("<<先頭", 21, navY + 10);  // bold
     canvas.drawRect(145, navY, 130, navH, COL_SETTINGS_BTN);
-    canvas.drawString("末尾>>", 165, navY + 12);
+    drawText("末尾>>", 160, navY + 10);
+    drawText("末尾>>", 161, navY + 10);  // bold
     canvas.drawRect(285, navY, 130, navH, COL_SETTINGS_BTN);
-    canvas.drawString("戻る", 320, navY + 12);
+    drawText("戻る", 318, navY + 10);
+    drawText("戻る", 319, navY + 10);  // bold
 
-    canvas.setTextSize(20);
+    canvas.setTextSize(24);
     char footer[32];
     snprintf(footer, sizeof(footer), "[%d/%d]", settings_cursor + 1, SET_COUNT);
-    drawText(footer, 440, navY + 14);
+    drawText(footer, 430, navY + 12);
+    drawText(footer, 431, navY + 12);  // bold
 
     unsigned long t0 = millis();
-    canvas.pushCanvas(0, 0, fast ? UPDATE_MODE_DU4 : UPDATE_MODE_GC16);
+    canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
     Serial.printf("[SETTINGS] pushCanvas took %lu ms\n", millis() - t0);
 }
 
@@ -263,55 +272,64 @@ void handleSettingsSelect() {
 
 void drawMidiSelect() {
     canvas.fillCanvas(COL_SETTINGS_BG); canvas.setTextColor(COL_SETTINGS_TEXT); canvas.setTextDatum(TL_DATUM);
-    canvas.setTextSize(26);
-    drawText("=== MIDIファイル選択 ===", 10, 10);
+    canvas.setTextSize(30);
+    drawText("=== MIDIファイル選択 ===", 10, 8);
+    drawText("=== MIDIファイル選択 ===", 11, 8);  // bold
 
-    canvas.setTextSize(22);
-    int y = 55, rowH = 38;
+    canvas.setTextSize(26);
+    int y = 50, rowH = 44;
     for (int i = 0; i < midi_file_count && y < 880; i++) {
         if (i == midi_select_cursor) canvas.fillRect(0, y - 2, 540, rowH - 2, COL_SETTINGS_CURSOR);
         drawText(midi_files[i], 10, y);
+        drawText(midi_files[i], 11, y);  // bold
         y += rowH;
     }
-    if (midi_file_count == 0) drawText("/midi/ にMIDIファイルなし", 10, 100);
+    if (midi_file_count == 0) { drawText("/midi/ にMIDIファイルなし", 10, 100); drawText("/midi/ にMIDIファイルなし", 11, 100); }
 
-    canvas.setTextSize(20);
+    canvas.setTextSize(26);
     drawText("L:上 R:下 P:選択 タップ:戻る", 10, 920);
+    drawText("L:上 R:下 P:選択 タップ:戻る", 11, 920);  // bold
     canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
 }
 
 void drawBaudSelect() {
     canvas.fillCanvas(COL_SETTINGS_BG); canvas.setTextColor(COL_SETTINGS_TEXT); canvas.setTextDatum(TL_DATUM);
-    canvas.setTextSize(26);
-    drawText("=== MIDIボーレート選択 ===", 10, 10);
+    canvas.setTextSize(30);
+    drawText("=== MIDIボーレート選択 ===", 10, 8);
+    drawText("=== MIDIボーレート選択 ===", 11, 8);  // bold
 
     canvas.setTextSize(30);
     int y = 80, rowH = 55;
     for (int i = 0; i < BAUD_OPTION_COUNT; i++) {
         if (i == baud_select_cursor) canvas.fillRect(0, y - 5, 540, rowH - 5, COL_SETTINGS_CURSOR);
         drawText(String(baud_options[i]), 20, y);
+        drawText(String(baud_options[i]), 21, y);  // bold
         y += rowH;
     }
 
-    canvas.setTextSize(20);
+    canvas.setTextSize(26);
     drawText("L:上 R:下 P:選択", 10, 920);
+    drawText("L:上 R:下 P:選択", 11, 920);  // bold
     canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
 }
 
 void drawPortSelect() {
     canvas.fillCanvas(COL_SETTINGS_BG); canvas.setTextColor(COL_SETTINGS_TEXT); canvas.setTextDatum(TL_DATUM);
-    canvas.setTextSize(26);
-    drawText("=== ポート選択 ===", 10, 10);
+    canvas.setTextSize(30);
+    drawText("=== ポート選択 ===", 10, 8);
+    drawText("=== ポート選択 ===", 11, 8);  // bold
 
-    canvas.setTextSize(26);
+    canvas.setTextSize(28);
     int y = 80, rowH = 55;
     for (int i = 0; i < PORT_COUNT; i++) {
         if (i == port_select_cursor) canvas.fillRect(0, y - 5, 540, rowH - 5, COL_SETTINGS_CURSOR);
         drawText(port_names[i], 20, y);
+        drawText(port_names[i], 21, y);  // bold
         y += rowH;
     }
 
-    canvas.setTextSize(20);
+    canvas.setTextSize(26);
     drawText("L:上 R:下 P:選択", 10, 920);
+    drawText("L:上 R:下 P:選択", 11, 920);  // bold
     canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
 }

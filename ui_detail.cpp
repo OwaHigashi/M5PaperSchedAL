@@ -69,6 +69,7 @@ static bool drawWrappedText(String text, int lineWidth, int lineHeight,
         if (bold) {
             drawText(line, x + 1, yInOut);
             drawText(line, x, yInOut + 1);
+            drawText(line, x + 1, yInOut + 1);
         }
         yInOut += lineHeight;
     }
