@@ -23,7 +23,7 @@ static int findLiteralNewline(const String& s) {
 //==============================================================================
 static bool drawWrappedText(String text, int lineWidth, int lineHeight,
                             int x, int maxY, int& skipLinesIn, int& yInOut,
-                            bool bold = false) {
+                            int boldLevel = 0) {
     while (text.length() > 0) {
         int nlPos = findLiteralNewline(text);
         String line;
@@ -65,12 +65,7 @@ static bool drawWrappedText(String text, int lineWidth, int lineHeight,
         if (yInOut >= maxY) {
             return true;  // 描画しきれない行が残っている
         }
-        drawText(line, x, yInOut);
-        if (bold) {
-            drawText(line, x + 1, yInOut);
-            drawText(line, x, yInOut + 1);
-            drawText(line, x + 1, yInOut + 1);
-        }
+        drawTextBold(line, x, yInOut, boldLevel);
         yInOut += lineHeight;
     }
     return false;  // 全行描画完了
@@ -110,9 +105,7 @@ void drawDetail(int idx, bool fast) {
         snprintf(buf, sizeof(buf), "%04d/%02d/%02d %s",
                  st.tm_year + 1900, st.tm_mon + 1, st.tm_mday, timeStr.c_str());
     }
-    drawText(buf, 10, 8);
-    drawText(buf, 11, 8);  // bold
-    drawText(buf, 10, 9);  // super bold
+    drawTextBold(buf, 10, 8, 2);
 
     // ── アラーム情報 (size 28) ──────────────────────────────────────────
     canvas.setTextSize(28);
@@ -127,9 +120,7 @@ void drawDetail(int idx, bool fast) {
         else                         offsetStr = "時刻通り";
         snprintf(buf, sizeof(buf), "アラーム: %s (%s) %s",
                  alTime.c_str(), offsetStr.c_str(), e.triggered ? "[済]" : "");
-        drawText(buf, 10, y);
-        drawText(buf, 11, y);  // bold
-        drawText(buf, 10, y + 1);  // super bold
+        drawTextBold(buf, 10, y, 2);
         y += 36;
 
         // MIDI/再生情報 (size 26 — 最小サイズ)
@@ -144,14 +135,10 @@ void drawDetail(int idx, bool fast) {
         extraInfo += dur == 0 ? "1曲" : String(dur) + "秒";
         int rep = e.play_repeat >= 0 ? e.play_repeat : config.play_repeat;
         extraInfo += " x" + String(rep);
-        drawText(extraInfo, 10, y);
-        drawText(extraInfo, 11, y);  // bold
-        drawText(extraInfo, 10, y + 1);  // super bold
+        drawTextBold(extraInfo, 10, y, 2);
         y += 34;
     } else {
-        drawText("アラーム: なし", 10, y);
-        drawText("アラーム: なし", 11, y);  // bold
-        drawText("アラーム: なし", 10, y + 1);  // super bold
+        drawTextBold("アラーム: なし", 10, y, 2);
         y += 36;
     }
 
@@ -189,9 +176,7 @@ void drawDetail(int idx, bool fast) {
             if (line.length() == 0) break;
             summary = summary.substring(line.length());
         }
-        drawText(line, 10, y);
-        drawText(line, 11, y);  // bold
-        drawText(line, 10, y + 1);  // super bold
+        drawTextBold(line, 10, y, 2);
         y += summaryLineH;
     }
 
@@ -208,15 +193,13 @@ void drawDetail(int idx, bool fast) {
 
     String desc = removeUnsupportedChars(e.description());
     bool hasMore = drawWrappedText(desc, DESC_LINE_W, DESC_LINE_H,
-                                   10, maxY, skipLines, y, true);
+                                   10, maxY, skipLines, y, 3);
 
     // ── フッター＆スクロール矢印 ────────────────────────────────────────
     canvas.setTextSize(26);
-    drawText("タップ:戻る  L/R:スクロール", 10, 910);
-    drawText("タップ:戻る  L/R:スクロール", 11, 910);  // bold
-    drawText("タップ:戻る  L/R:スクロール", 10, 911);  // super bold
-    if (detail_scroll > 0) { drawText("↑", 510, 180); drawText("↑", 511, 180); drawText("↑", 510, 181); }
-    if (hasMore)            { drawText("↓", 510, 850); drawText("↓", 511, 850); drawText("↓", 510, 851); }
+    drawTextBold("タップ:戻る  L/R:スクロール", 10, 910, 2);
+    if (detail_scroll > 0) drawTextBold("↑", 510, 180, 2);
+    if (hasMore)            drawTextBold("↓", 510, 850, 2);
 
     unsigned long t0 = millis();
     // スクロール時もGC16を使用（DU4はコントラストが低い）
@@ -237,30 +220,30 @@ void drawPlaying(int idx) {
     EventItem& e = events[idx];
 
     canvas.setTextSize(52);
-    canvas.drawString("ALARM!", 270, 60);
+    drawTextBold("ALARM!", 270, 60, 3);
 
     canvas.setTextSize(34);
     String summary = removeUnsupportedChars(e.summary());
     String line1 = utf8Substring(summary, 28);
-    canvas.drawString(line1, 270, 140);
+    drawTextBold(line1, 270, 140, 2);
     if (summary.length() > line1.length()) {
         String rest = summary.substring(line1.length());
         String line2 = utf8Substring(rest, 28);
-        canvas.drawString(line2, 270, 182);
+        drawTextBold(line2, 270, 182, 2);
     }
 
     struct tm st;
     localtime_r(&e.start, &st);
     String timeStr = formatTime(st.tm_hour, st.tm_min);
     canvas.setTextSize(60);
-    canvas.drawString(timeStr, 270, 260);
+    drawTextBold(timeStr, 270, 260, 3);
 
     canvas.setTextSize(28);
     String info = "";
     if (play_duration_ms > 0) info += String(play_duration_ms / 1000) + "秒";
     else info += "1曲";
     info += " x" + String(play_repeat_remaining) + "回";
-    canvas.drawString(info, 270, 330);
+    drawTextBold(info, 270, 330, 2);
 
     // DESCRIPTION（\nリテラル改行対応）
     canvas.setTextDatum(TL_DATUM);
@@ -269,11 +252,11 @@ void drawPlaying(int idx) {
     int y = 380;
     const int maxY = 880;
     int skipLines = 0;
-    drawWrappedText(desc, 34, 34, 20, maxY, skipLines, y);
+    drawWrappedText(desc, 34, 34, 20, maxY, skipLines, y, 3);
 
     canvas.setTextDatum(MC_DATUM);
     canvas.setTextSize(30);
-    canvas.drawString("タップで停止", 270, 925);
+    drawTextBold("タップで停止", 270, 925, 2);
 
     canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
 }
