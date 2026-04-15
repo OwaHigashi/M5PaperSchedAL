@@ -71,8 +71,12 @@ static void drawEventRow(int evtIdx, int y, bool highlighted, int nextEventIdx) 
     String alarmMark = "";
     bool showAlarmMark = false;
     if (events[evtIdx].has_alarm) {
-        alarmMark = events[evtIdx].triggered ? "*" : "♪";
-        showAlarmMark = !events[evtIdx].triggered;
+        bool anyPending = false;
+        for (int k = 0; k < events[evtIdx].alarm_count; k++) {
+            if (!events[evtIdx].triggered[k]) { anyPending = true; break; }
+        }
+        alarmMark = anyPending ? "♪" : "*";
+        showAlarmMark = anyPending;
     }
 
     String summary = removeUnsupportedChars(events[evtIdx].summary());
@@ -407,17 +411,25 @@ void drawList(bool fast, bool skip_push, bool highlight_changes, bool clean_refr
     }
     displayed_count = displayed;
 
-    // 次のアラーム表示
+    // 次のアラーム表示（全イベント×全スロット中、now以降で最早のもの）
     canvas.setTextSize(26);
-    int nextIdx = -1;
+    time_t nextAlarm = 0;
+    bool nextFound = false;
     for (int i = 0; i < event_count; i++) {
-        if (events[i].has_alarm && !events[i].triggered && events[i].alarm_time > now) {
-            nextIdx = i; break;
+        if (!events[i].has_alarm) continue;
+        for (int k = 0; k < events[i].alarm_count; k++) {
+            if (events[i].triggered[k]) continue;
+            time_t at = events[i].alarm_time[k];
+            if (at <= now) continue;
+            if (!nextFound || at < nextAlarm) {
+                nextAlarm = at;
+                nextFound = true;
+            }
         }
     }
-    if (nextIdx >= 0) {
+    if (nextFound) {
         struct tm al;
-        localtime_r(&events[nextIdx].alarm_time, &al);
+        localtime_r(&nextAlarm, &al);
         String alTime = formatTime(al.tm_hour, al.tm_min);
         snprintf(buf, sizeof(buf), "次AL:%s", alTime.c_str());
         drawText(buf, 380, 860);

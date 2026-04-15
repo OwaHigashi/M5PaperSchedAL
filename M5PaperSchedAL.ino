@@ -276,8 +276,10 @@ void safeReboot() {
     }
     time_t now = time(nullptr);
     for (int i = 0; i < event_count; i++) {
-        if (events[i].has_alarm && !events[i].triggered) {
-            long remain = (long)(events[i].alarm_time - now);
+        if (!events[i].has_alarm) continue;
+        for (int k = 0; k < events[i].alarm_count; k++) {
+            if (events[i].triggered[k]) continue;
+            long remain = (long)(events[i].alarm_time[k] - now);
             if (remain > 0 && remain < 300) {  // 5分以内
                 Serial.printf("REBOOT DEFERRED: alarm '%s' in %ld sec\n",
                               events[i].summary(), remain);

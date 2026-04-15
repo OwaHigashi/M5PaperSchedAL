@@ -176,7 +176,9 @@ bool parseDT(const char* raw, time_t& out, bool& is_allday) {
 //==============================================================================
 // アラームマーカーパーサー
 //==============================================================================
-bool parseAlarmMarker(const char* s_raw, bool is_summary, int& off, bool& found,
+bool parseAlarmMarker(const char* s_raw, bool is_summary,
+                      int* offsets, int& offset_count, int max_offsets,
+                      bool& found,
                       char* midi_file, int midi_file_size, bool& midi_is_url,
                       int& duration_sec, int& repeat_count) {
     static char* norm = nullptr;  // PSRAM上に配置
@@ -186,15 +188,22 @@ bool parseAlarmMarker(const char* s_raw, bool is_summary, int& off, bool& found,
     int sLen = strlen(s);
 
     found = false;
-    off = config.alarm_offset_default;
+    offset_count = 0;
     midi_file[0] = '\0';
     midi_is_url = false;
     duration_sec = -1;
     repeat_count = -1;
-    int maxOff = -1;
+
+    // 重複オフセット排除のためのローカルlambda風ヘルパ
+    auto pushOffset = [&](int v) {
+        if (offset_count >= max_offsets) return;
+        for (int k = 0; k < offset_count; k++) if (offsets[k] == v) return;
+        offsets[offset_count++] = v;
+    };
 
     // ── 統一ロジック: summary/description 問わず同じ判定 ──
     // 1) !...! ペアがあれば詳細パラメータを解析
+    //    オフセットはカンマ区切りで複数指定可: !-25,-15,-5!
     // 2) 閉じペアのない単独 ! があればデフォルトオフセットでアラームON
 
     int searchStart = 0;
@@ -207,6 +216,7 @@ bool parseAlarmMarker(const char* s_raw, bool is_summary, int& off, bool& found,
         if (!ePtr) {
             // 閉じ ! なし → 単独 ! → デフォルトオフセットでアラームON
             found = true;
+            if (offset_count == 0) pushOffset(config.alarm_offset_default);
             return true;
         }
         int endExcl = ePtr - s;
@@ -217,7 +227,7 @@ bool parseAlarmMarker(const char* s_raw, bool is_summary, int& off, bool& found,
         if (!content) content = (char*)ps_malloc(CONTENT_BUF);
         substrCopy(content, s, p + 1, endExcl, CONTENT_BUF);
 
-        int thisOff = config.alarm_offset_default;
+        bool blockHasOffset = false;
         bool thisIsUrl = false;
         char thisFile[MIDI_FILE_BUF];
         thisFile[0] = '\0';
@@ -233,9 +243,16 @@ bool parseAlarmMarker(const char* s_raw, bool is_summary, int& off, bool& found,
                     char numBuf[16];
                     substrCopy(numBuf, content, numStart, numEnd, sizeof(numBuf));
                     int val = safeAtoi(numBuf);
-                    if (val >= 0 && val <= 24 * 60) thisOff = (c == '-') ? val : -val;
+                    if (val >= 0 && val <= 24 * 60) {
+                        int signedVal = (c == '-') ? val : -val;
+                        pushOffset(signedVal);
+                        blockHasOffset = true;
+                    }
                 }
                 i = numEnd;
+            } else if (c == ',' || c == ' ') {
+                // カンマ・空白はオフセット区切りとして読み飛ばし
+                i++;
             } else if (c == '>' || c == '<') {
                 thisIsUrl = (c == '>');
                 int fileStart = i + 1, fileEnd = fileStart;
@@ -273,7 +290,9 @@ bool parseAlarmMarker(const char* s_raw, bool is_summary, int& off, bool& found,
             }
         }
 
-        if (abs(thisOff) > abs(maxOff) || maxOff == -1) maxOff = thisOff;
+        // !...! ブロック内に明示オフセットが無ければデフォルトを1つ
+        if (!blockHasOffset) pushOffset(config.alarm_offset_default);
+
         if (thisFile[0] != '\0') {
             safeCopy(midi_file, thisFile, midi_file_size);
             midi_is_url = thisIsUrl;
@@ -281,7 +300,7 @@ bool parseAlarmMarker(const char* s_raw, bool is_summary, int& off, bool& found,
         searchStart = endExcl + 1;
     }
 
-    if (found && maxOff != -1) off = maxOff;
+    if (found && offset_count == 0) pushOffset(config.alarm_offset_default);
     return found;
 }
 
@@ -407,24 +426,34 @@ static void registerEvent(const char* dtstart_raw, const char* summary, const ch
     //   という状態が発生する。表示されうる過去イベントは必ず再パースする。
     if (st <= now - 7 * 86400 || st >= now + 30 * 86400) return;
 
-    int off = 0;
+    int parsed_offsets[MAX_ALARMS_PER_EVENT];
+    int parsed_off_n = 0;
     bool hasAL = false;
     char midi_file_str[MIDI_FILE_BUF];
     midi_file_str[0] = '\0';
     bool midi_is_url_flag = false;
     int ev_duration = -1, ev_repeat = -1;
 
-    parseAlarmMarker(summary, true, off, hasAL, midi_file_str, MIDI_FILE_BUF,
+    parseAlarmMarker(summary, true, parsed_offsets, parsed_off_n, MAX_ALARMS_PER_EVENT,
+                     hasAL, midi_file_str, MIDI_FILE_BUF,
                      midi_is_url_flag, ev_duration, ev_repeat);
     if (!hasAL && desc[0] != '\0') {
-        parseAlarmMarker(desc, false, off, hasAL, midi_file_str, MIDI_FILE_BUF,
+        parseAlarmMarker(desc, false, parsed_offsets, parsed_off_n, MAX_ALARMS_PER_EVENT,
+                         hasAL, midi_file_str, MIDI_FILE_BUF,
                          midi_is_url_flag, ev_duration, ev_repeat);
     }
 
     if (hasAL) {
         char logSum[41];
         substrCopy(logSum, summary, 0, 40, sizeof(logSum));
-        Serial.printf("ICS_STREAM: [%d] ALARM '%s' offset=%d\n", event_count, logSum, off);
+        char offBuf[64]; offBuf[0] = '\0';
+        int op = 0;
+        for (int k = 0; k < parsed_off_n && op < (int)sizeof(offBuf) - 8; k++) {
+            op += snprintf(offBuf + op, sizeof(offBuf) - op,
+                           k == 0 ? "%d" : ",%d", parsed_offsets[k]);
+        }
+        Serial.printf("ICS_STREAM: [%d] ALARM '%s' offsets=[%s]\n",
+                      event_count, logSum, offBuf);
     }
 
     int idx = event_count;
@@ -459,15 +488,16 @@ static void registerEvent(const char* dtstart_raw, const char* summary, const ch
     events[idx].play_duration_sec = ev_duration;
     events[idx].play_repeat = ev_repeat;
 
+    events[idx].alarm_count = 0;
     if (hasAL) {
-        events[idx].offset_min = off;
-        events[idx].alarm_time = st - (time_t)off * 60;
         const time_t ALARM_GRACE_SEC = 600;
-        events[idx].triggered = (events[idx].alarm_time < now - ALARM_GRACE_SEC);
-    } else {
-        events[idx].offset_min = 0;
-        events[idx].alarm_time = 0;
-        events[idx].triggered = false;
+        for (int k = 0; k < parsed_off_n; k++) {
+            int slot = events[idx].alarm_count;
+            events[idx].offset_min[slot]  = parsed_offsets[k];
+            events[idx].alarm_time[slot]  = st - (time_t)parsed_offsets[k] * 60;
+            events[idx].triggered[slot]   = (events[idx].alarm_time[slot] < now - ALARM_GRACE_SEC);
+            events[idx].alarm_count++;
+        }
     }
     event_count++;
 }
@@ -910,9 +940,17 @@ bool fetchAndUpdate() {
             if (events[i].has_alarm) {
                 alarm_count++;
                 struct tm st; localtime_r(&events[i].start, &st);
-                Serial.printf("  ALARM[%d]: %02d/%02d %02d:%02d '%s' off=%dmin trig=%d\n",
+                char offBuf[96]; offBuf[0] = '\0';
+                int op = 0;
+                for (int k = 0; k < events[i].alarm_count && op < (int)sizeof(offBuf) - 12; k++) {
+                    op += snprintf(offBuf + op, sizeof(offBuf) - op,
+                                   k == 0 ? "%d%s" : ",%d%s",
+                                   events[i].offset_min[k],
+                                   events[i].triggered[k] ? "*" : "");
+                }
+                Serial.printf("  ALARM[%d]: %02d/%02d %02d:%02d '%s' off=[%s]min\n",
                               i, st.tm_mon+1, st.tm_mday, st.tm_hour, st.tm_min,
-                              events[i].summary(), events[i].offset_min, events[i].triggered);
+                              events[i].summary(), offBuf);
             }
         }
         Serial.printf("  Total alarms: %d / %d events\n", alarm_count, event_count);

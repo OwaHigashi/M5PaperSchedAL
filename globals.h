@@ -37,6 +37,7 @@ extern int settings_cursor;
 
 // 再生状態
 extern int playing_event;
+extern int playing_alarm_idx;
 extern int play_repeat_remaining;
 extern unsigned long play_start_ms;
 extern int play_duration_ms;
@@ -154,7 +155,9 @@ String getMidiPath(int eventIdx);
 
 // ics_parser.cpp
 bool parseDT(const char* raw, time_t& out, bool& is_allday);
-bool parseAlarmMarker(const char* s_raw, bool is_summary, int& off, bool& found,
+bool parseAlarmMarker(const char* s_raw, bool is_summary,
+                      int* offsets, int& offset_count, int max_offsets,
+                      bool& found,
                       char* midi_file, int midi_file_size, bool& midi_is_url,
                       int& duration_sec, int& repeat_count);
 void sortEvents();
