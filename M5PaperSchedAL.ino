@@ -148,6 +148,7 @@ void setup() {
 
     // キャンバス作成
     canvas.createCanvas(540, 960);
+    canvas.setTextWrap(false);  // 長いテキストの自動折り返しを無効化（行重なり防止）
     canvas.setTextDatum(TL_DATUM);
 
     // ★ フォント読み込み（loadFont + createRender をまとめて実行）
