@@ -6,7 +6,7 @@
 //==============================================================================
 // ビルドバージョン (※コード更新時はここを変更)
 //==============================================================================
-#define BUILD_VERSION "030"
+#define BUILD_VERSION "031"
 
 //==============================================================================
 // ピン定義
@@ -98,6 +98,7 @@ enum UiState {
 };
 
 enum SettingsItem {
+    SET_ICS_UPDATE,
     SET_DEBUG_FETCH,
     SET_WIFI_SSID,
     SET_WIFI_PASS,
@@ -116,7 +117,6 @@ enum SettingsItem {
     SET_PLAY_REPEAT,
     SET_NTFY_TOPIC,
     SET_NTFY_TEST,
-    SET_ICS_UPDATE,
     SET_SOUND_TEST,
     SET_SAVE_EXIT,
     SET_COUNT

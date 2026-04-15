@@ -241,7 +241,7 @@ void handleTouch(int tx, int ty) {
             }
             // 項目タップ
             {
-                int itemY = 45, rowH = 50;
+                int itemY = 46, rowH = 60;
                 int maxVisible = (895 - itemY) / rowH;
                 for (int n = 0; n < maxVisible; n++) {
                     int i = settings_cursor + n;
