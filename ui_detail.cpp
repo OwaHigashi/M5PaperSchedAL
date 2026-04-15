@@ -111,17 +111,29 @@ void drawDetail(int idx, bool fast) {
     canvas.setTextSize(28);
     int y = 48;
     if (e.has_alarm) {
-        struct tm al;
-        localtime_r(&e.alarm_time, &al);
-        String alTime = formatTime(al.tm_hour, al.tm_min);
-        String offsetStr;
-        if (e.offset_min > 0)       offsetStr = String(e.offset_min) + "分前";
-        else if (e.offset_min < 0)  offsetStr = String(-e.offset_min) + "分後";
-        else                         offsetStr = "時刻通り";
-        snprintf(buf, sizeof(buf), "アラーム: %s (%s) %s",
-                 alTime.c_str(), offsetStr.c_str(), e.triggered ? "[済]" : "");
-        drawTextBold(buf, 10, y, 2);
-        y += 36;
+        // 複数アラーム対応: 1行目はラベル、各スロットを順に描画
+        if (e.alarm_count > 1) {
+            snprintf(buf, sizeof(buf), "アラーム: %d件", e.alarm_count);
+            drawTextBold(buf, 10, y, 2);
+            y += 32;
+        }
+        for (int k = 0; k < e.alarm_count; k++) {
+            struct tm al;
+            localtime_r(&e.alarm_time[k], &al);
+            String alTime = formatTime(al.tm_hour, al.tm_min);
+            int off = e.offset_min[k];
+            String offsetStr;
+            if (off > 0)      offsetStr = String(off) + "分前";
+            else if (off < 0) offsetStr = String(-off) + "分後";
+            else              offsetStr = "時刻通り";
+            const char* prefix = (e.alarm_count > 1) ? "  " : "アラーム: ";
+            snprintf(buf, sizeof(buf), "%s%s (%s) %s",
+                     prefix, alTime.c_str(), offsetStr.c_str(),
+                     e.triggered[k] ? "[済]" : "");
+            drawTextBold(buf, 10, y, 2);
+            y += 32;
+        }
+        y += 4;
 
         // MIDI/再生情報 (size 26 — 最小サイズ)
         canvas.setTextSize(26);

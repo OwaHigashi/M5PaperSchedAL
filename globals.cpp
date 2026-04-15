@@ -21,6 +21,7 @@ ButtonArea btn_prev, btn_next, btn_today, btn_detail;
 int settings_cursor = 0;
 
 int playing_event = -1;
+int playing_alarm_idx = -1;     // 発火中アラームのslot index
 int play_repeat_remaining = 0;
 unsigned long play_start_ms = 0;
 int play_duration_ms = 0;
@@ -94,7 +95,11 @@ String computeRowDisplayText(int evtIdx) {
     String timeStr = events[evtIdx].is_allday ? "[終日]" : formatTime(st.tm_hour, st.tm_min);
     String mark = "";
     if (events[evtIdx].has_alarm) {
-        mark = events[evtIdx].triggered ? "*" : "♪";
+        bool anyPending = false;
+        for (int k = 0; k < events[evtIdx].alarm_count; k++) {
+            if (!events[evtIdx].triggered[k]) { anyPending = true; break; }
+        }
+        mark = anyPending ? "♪" : "*";
     }
 
     String summary = removeUnsupportedChars(events[evtIdx].summary());
