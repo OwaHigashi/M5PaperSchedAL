@@ -39,6 +39,7 @@ extern int settings_cursor;
 extern int playing_event;
 extern int playing_alarm_idx;
 extern int play_repeat_remaining;
+extern bool initial_fetch_done;
 extern unsigned long play_start_ms;
 extern int play_duration_ms;
 

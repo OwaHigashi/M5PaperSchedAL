@@ -10,6 +10,15 @@
 //    DRAM断片化の最大原因だった動的String確保/解放を根絶
 
 //==============================================================================
+// 直前バッファ参照（registerEvent から triggered 状態を引き継ぐため）
+//   fetchAndUpdate がバッファをスワップする直前に旧バッファをここへ保存し、
+//   registerEvent() が同 (start, summary, alarm_time) のスロットを検索して
+//   triggered フラグを引き継ぐ。
+//==============================================================================
+static EventItem* fetch_prev_buf = nullptr;
+static int        fetch_prev_count = 0;
+
+//==============================================================================
 // ★ mbedTLS PSRAM アロケータ
 //   SDKデフォルトはINTERNAL_MEM_ALLOC（内部DRAM専用 → ~50KB消費で断片化）
 //   PSRAM対応アロケータに差し替えることで、SSLバッファをPSRAMに配置
@@ -490,12 +499,47 @@ static void registerEvent(const char* dtstart_raw, const char* summary, const ch
 
     events[idx].alarm_count = 0;
     if (hasAL) {
-        const time_t ALARM_GRACE_SEC = 600;
+        const time_t ALARM_GRACE_SEC = 600;       // 起動直後の再生防止グレース
+        const time_t LATE_ADD_GRACE  = 86400;     // 通常fetch時: 開始翌日まで遅延発火を許容
+
+        // 旧バッファに同 (start, summary) のイベントが居れば triggered を引き継ぐための検索
+        const EventItem* prev_match = nullptr;
+        if (fetch_prev_buf && fetch_prev_count > 0) {
+            for (int p = 0; p < fetch_prev_count; p++) {
+                if (fetch_prev_buf[p].start != st) continue;
+                if (strcmp(fetch_prev_buf[p].summary(), events[idx].summary()) != 0) continue;
+                prev_match = &fetch_prev_buf[p];
+                break;
+            }
+        }
+
         for (int k = 0; k < parsed_off_n; k++) {
             int slot = events[idx].alarm_count;
-            events[idx].offset_min[slot]  = parsed_offsets[k];
-            events[idx].alarm_time[slot]  = st - (time_t)parsed_offsets[k] * 60;
-            events[idx].triggered[slot]   = (events[idx].alarm_time[slot] < now - ALARM_GRACE_SEC);
+            time_t at = st - (time_t)parsed_offsets[k] * 60;
+            events[idx].offset_min[slot] = parsed_offsets[k];
+            events[idx].alarm_time[slot] = at;
+
+            // 1) 旧バッファに同じ alarm_time のスロットがあれば、その triggered を継承
+            bool carried = false;
+            if (prev_match) {
+                for (int j = 0; j < prev_match->alarm_count; j++) {
+                    if (prev_match->alarm_time[j] == at) {
+                        events[idx].triggered[slot] = prev_match->triggered[j];
+                        carried = true;
+                        break;
+                    }
+                }
+            }
+
+            // 2) 新規アラーム: 起動初回は従来グレース、通常fetch中は「開始翌日まで」許容
+            if (!carried) {
+                if (!initial_fetch_done) {
+                    events[idx].triggered[slot] = (at < now - ALARM_GRACE_SEC);
+                } else {
+                    // 後付け!でも開始時刻 + 24h までは鳴らす（既に終わった予定は抑止）
+                    events[idx].triggered[slot] = (st < now - LATE_ADD_GRACE);
+                }
+            }
             events[idx].alarm_count++;
         }
     }
@@ -786,6 +830,9 @@ bool fetchAndUpdate() {
     EventItem* next_buf = (events == events_buf_a) ? events_buf_b : events_buf_a;
     events = next_buf;
     event_count = 0;
+    // registerEvent から旧バッファを参照できるよう公開
+    fetch_prev_buf   = prev_buf;
+    fetch_prev_count = prev_count;
     Serial.printf("Fetch: switching to buffer %s (prev: %d events)\n",
                   (next_buf == events_buf_a) ? "A" : "B", prev_count);
 
@@ -966,5 +1013,8 @@ bool fetchAndUpdate() {
     Serial.printf("Fetch complete (%d->%d items) - always redraw\n",
                   prev_count, event_count);
     last_fetch = time(nullptr);
+    initial_fetch_done = true;          // 以降の fetch は「通常fetch」扱い
+    fetch_prev_buf = nullptr;
+    fetch_prev_count = 0;
     return true;
 }
