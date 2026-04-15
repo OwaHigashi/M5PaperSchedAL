@@ -133,6 +133,7 @@ int  utf8CharBytes(uint8_t c);
 String utf8Substring(const String& s, int maxWidth);
 String normalizeFullWidth(const String& s);
 String removeUnsupportedChars(const String& s);
+String simplifyHtml(const String& s);
 
 // sd_utils.cpp
 void waitEPDReady();   // EPD描画完了を待つ（SD操作前に必須）

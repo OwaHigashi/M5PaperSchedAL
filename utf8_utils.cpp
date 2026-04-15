@@ -60,6 +60,95 @@ String normalizeFullWidth(const String& s) {
     return result;
 }
 
+// HTML簡易デコード
+// - ブロック要素(<br>, <p>, <div>, <li>, <h1>-<h6>, <tr>) → "\n"リテラル改行
+// - 他のタグ(<b>, <span>, <a>...) → 除去（中身の文字列は残す）
+// - 主要エンティティ(&nbsp; &amp; &lt; &gt; &quot; &apos; &#NNN; &#xHH;) → 対応
+// - 未対応のエンティティは除去（表示を汚さないため）
+String simplifyHtml(const String& s) {
+    String result;
+    result.reserve(s.length());
+    int i = 0;
+    int n = (int)s.length();
+    while (i < n) {
+        char c = s[i];
+        if (c == '<') {
+            int end = s.indexOf('>', i + 1);
+            if (end < 0) { result += s.substring(i); break; }
+            String tag = s.substring(i + 1, end);
+            tag.trim();
+            bool isClosing = false;
+            if (tag.length() > 0 && tag[0] == '/') {
+                isClosing = true;
+                tag = tag.substring(1);
+                tag.trim();
+            }
+            String name;
+            for (int k = 0; k < (int)tag.length(); k++) {
+                char ch = tag[k];
+                if (ch == ' ' || ch == '/' || ch == '\t') break;
+                if (ch >= 'A' && ch <= 'Z') ch = ch - 'A' + 'a';
+                name += ch;
+            }
+            bool isBlock = (name == "br" || name == "p" || name == "div" ||
+                            name == "li" || name == "tr" ||
+                            name == "h1" || name == "h2" || name == "h3" ||
+                            name == "h4" || name == "h5" || name == "h6");
+            if (isBlock && (name == "br" || name == "p" || name == "div" || isClosing)) {
+                result += "\\n";
+            }
+            i = end + 1;
+            continue;
+        }
+        if (c == '&') {
+            int end = s.indexOf(';', i + 1);
+            if (end > 0 && end - i <= 10) {
+                String ent = s.substring(i + 1, end);
+                String entLower = ent;
+                entLower.toLowerCase();
+                bool handled = true;
+                if      (entLower == "nbsp") result += ' ';
+                else if (entLower == "amp")  result += '&';
+                else if (entLower == "lt")   result += '<';
+                else if (entLower == "gt")   result += '>';
+                else if (entLower == "quot") result += '"';
+                else if (entLower == "apos") result += '\'';
+                else if (ent.length() > 1 && ent[0] == '#') {
+                    int code = 0;
+                    bool valid = true;
+                    if (ent[1] == 'x' || ent[1] == 'X') {
+                        if (ent.length() < 3) valid = false;
+                        for (int k = 2; k < (int)ent.length() && valid; k++) {
+                            char ch = ent[k]; int d = -1;
+                            if (ch >= '0' && ch <= '9') d = ch - '0';
+                            else if (ch >= 'a' && ch <= 'f') d = ch - 'a' + 10;
+                            else if (ch >= 'A' && ch <= 'F') d = ch - 'A' + 10;
+                            else valid = false;
+                            if (valid) code = code * 16 + d;
+                        }
+                    } else {
+                        for (int k = 1; k < (int)ent.length() && valid; k++) {
+                            char ch = ent[k];
+                            if (ch < '0' || ch > '9') { valid = false; break; }
+                            code = code * 10 + (ch - '0');
+                        }
+                    }
+                    if (valid && code >= 0x20 && code < 0x7F) result += (char)code;
+                    // 非ASCII/未対応はスキップ
+                }
+                else handled = false;
+                if (handled) { i = end + 1; continue; }
+                // 未知のエンティティはまるごと除去
+                i = end + 1;
+                continue;
+            }
+        }
+        result += c;
+        i++;
+    }
+    return result;
+}
+
 // 4バイト文字（絵文字）と制御文字（0x00-0x1F、ただしタブ・改行は許可）を除去
 String removeUnsupportedChars(const String& s) {
     String result;
