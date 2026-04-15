@@ -162,7 +162,7 @@ void drawDetail(int idx, bool fast) {
     canvas.setTextSize(30);
     int summaryLineH = 38;
     int summaryLineW = 32;  // 全角16文字相当（30px × 16 ≈ 480px）
-    String summary = removeUnsupportedChars(e.summary());
+    String summary = removeUnsupportedChars(simplifyHtml(e.summary()));
     while (summary.length() > 0 && y < 300) {
         // SUMMARY に "\n" が含まれる場合も改行として扱う
         int nlPos = findLiteralNewline(summary);
@@ -203,7 +203,7 @@ void drawDetail(int idx, bool fast) {
     const int maxY = 890;
     int skipLines = detail_scroll;
 
-    String desc = removeUnsupportedChars(e.description());
+    String desc = removeUnsupportedChars(simplifyHtml(e.description()));
     bool hasMore = drawWrappedText(desc, DESC_LINE_W, DESC_LINE_H,
                                    10, maxY, skipLines, y, 3);
 
@@ -235,7 +235,7 @@ void drawPlaying(int idx) {
     drawTextBold("ALARM!", 270, 60, 3);
 
     canvas.setTextSize(34);
-    String summary = removeUnsupportedChars(e.summary());
+    String summary = removeUnsupportedChars(simplifyHtml(e.summary()));
     String line1 = utf8Substring(summary, 28);
     drawTextBold(line1, 270, 140, 2);
     if (summary.length() > line1.length()) {
@@ -260,7 +260,7 @@ void drawPlaying(int idx) {
     // DESCRIPTION（\nリテラル改行対応）
     canvas.setTextDatum(TL_DATUM);
     canvas.setTextSize(26);
-    String desc = removeUnsupportedChars(e.description());
+    String desc = removeUnsupportedChars(simplifyHtml(e.description()));
     int y = 380;
     const int maxY = 880;
     int skipLines = 0;
