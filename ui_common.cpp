@@ -85,19 +85,31 @@ void partialRefreshHeader() {
     canvas.drawString(buf, 10, 8);
     canvas.drawString(buf, 11, 8);
 
-    // WiFi・SD状態 + 最終更新時刻
+    // 最終更新時刻 + URL毎のfetch状態 + WiFi/SD (drawListと揃える)
     canvas.setTextSize(22);
-    canvas.setTextColor(10);  // 薄めの色で控えめに表示
+    char statusBuf[96];
+    int spos = 0;
     if (last_fetch > 1000000000) {
         struct tm ft; localtime_r(&last_fetch, &ft);
-        char fbuf[32];
-        snprintf(fbuf, sizeof(fbuf), "upd %02d:%02d", ft.tm_hour, ft.tm_min);
-        canvas.drawString(fbuf, 310, 10);
+        spos += snprintf(statusBuf + spos, sizeof(statusBuf) - spos,
+                         "%02d:%02d", ft.tm_hour, ft.tm_min);
+    } else {
+        spos += snprintf(statusBuf + spos, sizeof(statusBuf) - spos, "--:--");
+    }
+    for (int i = 0; i < fetch_url_count && spos < (int)sizeof(statusBuf) - 8; i++) {
+        if (fetch_url_status[i] == 2) {
+            spos += snprintf(statusBuf + spos, sizeof(statusBuf) - spos,
+                             " fch%dX", i + 1);
+        }
+    }
+    if (WiFi.status() != WL_CONNECTED) {
+        spos += snprintf(statusBuf + spos, sizeof(statusBuf) - spos, " !W");
+    }
+    if (!sd_healthy) {
+        spos += snprintf(statusBuf + spos, sizeof(statusBuf) - spos, " !S");
     }
     canvas.setTextColor(COL_HEADER_TEXT);
-    String status = (WiFi.status() == WL_CONNECTED) ? "WiFi:OK" : "WiFi:NG";
-    if (!sd_healthy) status += " SD:NG";
-    canvas.drawString(status.c_str(), 430, 10);
+    canvas.drawString(statusBuf, 260, 10);
 
     // ハートビート状態も反映
     if (heartbeat_visible) {

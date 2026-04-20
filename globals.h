@@ -116,6 +116,12 @@ extern int partial_refresh_count;
 // ヒープ不足スキップ連続回数
 extern int heap_skip_count;
 
+// URLごとのfetch結果 (ヘッダー表示用)
+//   status: 0=unknown/未試行, 1=OK, 2=FAIL
+#define MAX_FETCH_URLS 8
+extern int fetch_url_count;
+extern uint8_t fetch_url_status[MAX_FETCH_URLS];
+
 // スイッチ状態
 extern bool sw_l_prev, sw_r_prev, sw_p_prev;
 

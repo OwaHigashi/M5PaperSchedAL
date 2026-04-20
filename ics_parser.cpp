@@ -860,6 +860,10 @@ bool fetchAndUpdate() {
     }
     Serial.printf("ICS URLs configured: %d\n", total_urls);
 
+    // ── URLごとの状態テーブルを初期化 (ヘッダー表示用) ──
+    fetch_url_count = (total_urls > MAX_FETCH_URLS) ? MAX_FETCH_URLS : total_urls;
+    for (int i = 0; i < MAX_FETCH_URLS; i++) fetch_url_status[i] = 0;
+
     char* saveptr = nullptr;
     char* token = strtok_r(url_buf, ",", &saveptr);
     while (token) {
@@ -888,10 +892,16 @@ bool fetchAndUpdate() {
                     if (!connectWiFi()) {
                         Serial.println("WiFi reconnect failed");
                         skip_count++;
+                        if (url_count - 1 < MAX_FETCH_URLS) fetch_url_status[url_count - 1] = 2;
                         char* remaining = strtok_r(nullptr, ",", &saveptr);
+                        int skip_idx = url_count;
                         while (remaining) {
                             while (*remaining == ' ') remaining++;
-                            if (strlen(remaining) > 0) skip_count++;
+                            if (strlen(remaining) > 0) {
+                                skip_count++;
+                                if (skip_idx < MAX_FETCH_URLS) fetch_url_status[skip_idx] = 2;
+                                skip_idx++;
+                            }
                             remaining = strtok_r(nullptr, ",", &saveptr);
                         }
                         break;
@@ -903,13 +913,17 @@ bool fetchAndUpdate() {
 
             Serial.printf("=== Fetching URL %d/%d: %.60s... ===\n", url_count, total_urls, token);
             int result = doFetchURL(token);
-            if (result > 0) {
-                total_added += result;
-                Serial.printf("URL %d: +%d events (total: %d)\n", url_count, result, event_count);
-            } else if (result == 0) {
-                Serial.printf("URL %d: 0 events added\n", url_count);
+            if (result >= 0) {
+                if (url_count - 1 < MAX_FETCH_URLS) fetch_url_status[url_count - 1] = 1;
+                if (result > 0) {
+                    total_added += result;
+                    Serial.printf("URL %d: +%d events (total: %d)\n", url_count, result, event_count);
+                } else {
+                    Serial.printf("URL %d: 0 events added\n", url_count);
+                }
             } else {
                 fail_count++;
+                if (url_count - 1 < MAX_FETCH_URLS) fetch_url_status[url_count - 1] = 2;
                 Serial.printf("URL %d: fetch failed\n", url_count);
             }
         }
