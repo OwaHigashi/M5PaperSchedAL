@@ -919,15 +919,16 @@ bool fetchAndUpdate() {
     Serial.printf("All URLs done: %d/%d fetched, %d failed, %d skipped, %d events\n",
                   url_count - fail_count, total_urls, fail_count, skip_count, event_count);
 
-    // ── URL失敗/スキップあり → 旧バッファに復帰 ──
-    // 一部のURLが失敗・スキップされた場合、不完全なデータを使わず旧データを保持
+    // ── URL失敗/スキップあり → 部分データ採用（ゼロ件のときだけ旧データ復帰） ──
+    // 旧仕様: event_count < prev_count なら一律旧データへ復帰
+    //   → 1本のURLが失敗し続けると起動時スナップショットから永久に更新されない
+    //     (新規追加した予定が再起動まで見えないバグ v036 で修正)
+    // 新仕様: 部分成功した新データを採用。次サイクルで失敗URLは再取得される。
     bool incomplete_fetch = (fail_count > 0 || skip_count > 0);
-    if (incomplete_fetch && event_count < prev_count) {
-        Serial.printf("*** Incomplete fetch (fail:%d skip:%d) and events dropped %d->%d - restoring previous ***\n",
-                      fail_count, skip_count, prev_count, event_count);
+    if (incomplete_fetch && event_count == 0) {
+        Serial.printf("All fetches failed/skipped - restoring previous %d events\n", prev_count);
         events = prev_buf;
         event_count = prev_count;
-
         fetch_fail_count++;
         size_t mb = ESP.getMaxAllocHeap();
 
@@ -944,11 +945,9 @@ bool fetchAndUpdate() {
             return false;
         }
 
-        // ヒープ不足でスキップした場合
         if (skip_count > 0) {
             heap_skip_count++;
             Serial.printf("=== URLs skipped due to heap (skip streak: %d) ===\n", heap_skip_count);
-            // ★ 3回連続ヒープスキップでリブート（毎回リブートするループを防止）
             if (heap_skip_count >= 3) {
                 Serial.println("=== Too many heap skips - proactive restart ===");
                 heap_skip_count = 0;
@@ -959,14 +958,9 @@ bool fetchAndUpdate() {
         last_fetch = time(nullptr);
         return false;
     }
-    // 全URL失敗でイベント0件
-    if (event_count == 0 && (fail_count > 0 || skip_count > 0)) {
-        Serial.printf("All fetches failed/skipped - restoring previous %d events\n", prev_count);
-        events = prev_buf;
-        event_count = prev_count;
-        fetch_fail_count++;
-        last_fetch = time(nullptr);
-        return false;
+    if (incomplete_fetch) {
+        Serial.printf("*** Partial fetch (fail:%d skip:%d) — accepting %d events (prev:%d) ***\n",
+                      fail_count, skip_count, event_count, prev_count);
     }
 
     // ── 全URLフェッチ完了後にソート＆トリム ──
