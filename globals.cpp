@@ -80,6 +80,9 @@ int displayed_next_event_idx = -1;
 int partial_refresh_count = 0;
 int heap_skip_count = 0;
 
+int fetch_url_count = 0;
+uint8_t fetch_url_status[MAX_FETCH_URLS] = {0};
+
 bool sw_l_prev = true;
 bool sw_r_prev = true;
 bool sw_p_prev = true;
