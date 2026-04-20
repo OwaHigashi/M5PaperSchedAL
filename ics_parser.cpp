@@ -975,6 +975,16 @@ bool fetchAndUpdate() {
     if (incomplete_fetch) {
         Serial.printf("*** Partial fetch (fail:%d skip:%d) — accepting %d events (prev:%d) ***\n",
                       fail_count, skip_count, event_count, prev_count);
+        // v038: ~35KB/cycle の heap leak があり、数サイクル後に URL2/3 の SSL connect が
+        //       落ちる（= fch2X fch3X が常時表示される）。WiFi が生きているなら原因は
+        //       heap とみなしてサイレント再起動で heap を再生する。WiFi 切断中は
+        //       ネットワーク障害の可能性があるので reboot loop 防止のため見送る。
+        //       e-paper は残像保持なので pushCanvas せずに restart しても画面は前の
+        //       状態を維持し、再起動後の fetch で自然に更新される。
+        if (WiFi.status() == WL_CONNECTED) {
+            Serial.println("=== Partial fetch with WiFi up — suspect heap leak, silent reboot ===");
+            safeReboot();
+        }
     }
 
     // ── 全URLフェッチ完了後にソート＆トリム ──
