@@ -23,17 +23,47 @@ static int        fetch_prev_count = 0;
 //   SDKデフォルトはINTERNAL_MEM_ALLOC（内部DRAM専用 → ~50KB消費で断片化）
 //   PSRAM対応アロケータに差し替えることで、SSLバッファをPSRAMに配置
 //==============================================================================
+// [LEAK] v038: mbedTLS側の確保バランスを観測するためのカウンタ
+//   doFetchURL 開始時に delta を取り、終了時に差分を log する
+static uint32_t mbed_alloc_psram_bytes    = 0;
+static uint32_t mbed_alloc_psram_count    = 0;
+static uint32_t mbed_alloc_internal_bytes = 0;
+static uint32_t mbed_alloc_internal_count = 0;
+static uint32_t mbed_free_count           = 0;
+
 static void* psram_calloc(size_t n, size_t size) {
     // まずPSRAMから確保を試み、失敗したら内部RAMにフォールバック
+    size_t total = n * size;
     void* p = heap_caps_calloc(n, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!p) {
+    if (p) {
+        mbed_alloc_psram_bytes += total;
+        mbed_alloc_psram_count++;
+    } else {
         p = heap_caps_calloc(n, size, MALLOC_CAP_8BIT);
+        if (p) {
+            mbed_alloc_internal_bytes += total;
+            mbed_alloc_internal_count++;
+        }
     }
     return p;
 }
 
 static void psram_free(void* ptr) {
+    if (ptr) mbed_free_count++;
     heap_caps_free(ptr);
+}
+
+// [LEAK] 内部ヒープ統計を1行で出力
+static void dumpHeapTag(const char* tag) {
+    multi_heap_info_t info;
+    heap_caps_get_info(&info, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    Serial.printf("[LEAK] %s: free=%u largest=%u min_free=%u alloc_blocks=%u free_blocks=%u\n",
+                  tag,
+                  (unsigned)info.total_free_bytes,
+                  (unsigned)info.largest_free_block,
+                  (unsigned)info.minimum_free_bytes,
+                  (unsigned)info.allocated_blocks,
+                  (unsigned)info.free_blocks);
 }
 
 static bool mbedtls_psram_installed = false;
@@ -690,12 +720,21 @@ static int doFetchURL(const char* url_str) {
 
     int count_before = event_count;  // このURL fetch前の件数
 
+    // [LEAK] doFetchURL 入口の計装 — mbedTLSアロケータの累積カウンタ diff 用スナップショット
+    uint32_t mbed_psram_b0  = mbed_alloc_psram_bytes;
+    uint32_t mbed_psram_c0  = mbed_alloc_psram_count;
+    uint32_t mbed_intrn_b0  = mbed_alloc_internal_bytes;
+    uint32_t mbed_intrn_c0  = mbed_alloc_internal_count;
+    uint32_t mbed_free_c0   = mbed_free_count;
+    dumpHeapTag("doFetchURL:enter");
+
     // ── SSL接続 ──
     WiFiClientSecure client;
     client.setInsecure();
     client.setTimeout(15);
     Serial.printf("SSL client initialized (heap: %d, maxBlock: %d)\n",
                   ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+    dumpHeapTag("WiFiClientSecure:after_init");
 
     if (!client.connect(host, port)) {
         Serial.printf("SSL connect failed (heap:%d maxBlock:%d)\n",
@@ -773,13 +812,27 @@ static int doFetchURL(const char* url_str) {
         if (hl <= 0) break;
     }
     Serial.printf("HTTP OK, headers done (heap: %d)\n", ESP.getFreeHeap());
+    dumpHeapTag("parseICSStream:before");
 
     // ── ICSボディをストリーミング解析（events[]にアペンド） ──
     int result = parseICSStream(&client);
+    dumpHeapTag("parseICSStream:after");
     client.stop();
+    dumpHeapTag("client.stop:after");
     Serial.printf("SSL cleanup done (heap:%d maxBlock:%d stack_free:%d)\n",
                   ESP.getFreeHeap(), ESP.getMaxAllocHeap(),
                   uxTaskGetStackHighWaterMark(NULL));
+    // [LEAK] doFetchURL 出口の diff 表示 — このcycleでPSRAM/internalに何バイト新規確保され、
+    //        いくつ解放されなかったかを可視化する
+    Serial.printf("[LEAK] doFetchURL:exit mbed_psram=+%u/%u mbed_intrn=+%u/%u free_diff=%d (alloc_tot=%u free_tot=%u)\n",
+                  (unsigned)(mbed_alloc_psram_bytes - mbed_psram_b0),
+                  (unsigned)(mbed_alloc_psram_count - mbed_psram_c0),
+                  (unsigned)(mbed_alloc_internal_bytes - mbed_intrn_b0),
+                  (unsigned)(mbed_alloc_internal_count - mbed_intrn_c0),
+                  (int)((mbed_alloc_psram_count + mbed_alloc_internal_count - mbed_psram_c0 - mbed_intrn_c0)
+                        - (mbed_free_count - mbed_free_c0)),
+                  (unsigned)(mbed_alloc_psram_count + mbed_alloc_internal_count),
+                  (unsigned)mbed_free_count);
 
     int added = event_count - count_before;
     if (added > 0) {
@@ -912,7 +965,10 @@ bool fetchAndUpdate() {
             }
 
             Serial.printf("=== Fetching URL %d/%d: %.60s... ===\n", url_count, total_urls, token);
+            dumpHeapTag("loop:before_doFetchURL");
             int result = doFetchURL(token);
+            // [LEAK] ここは WiFiClientSecure destructor 実行後の状態
+            dumpHeapTag("loop:after_doFetchURL+dtor");
             if (result >= 0) {
                 if (url_count - 1 < MAX_FETCH_URLS) fetch_url_status[url_count - 1] = 1;
                 if (result > 0) {
