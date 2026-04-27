@@ -19,6 +19,7 @@ Thumbs.db
 # IDE files
 .vscode/
 .idea/
+.claude/
 
 # Config files that might contain sensitive data
 config.json
