@@ -268,25 +268,22 @@ void setup() {
 // 安全リブート（直近アラームがなければリブート）
 //==============================================================================
 void safeReboot() {
-    // MIDI再生中は延期
+    // 延期は「MIDI再生中」のみ。再生完了時に finishAlarm() が reboot_pending を消化する。
+    //
+    // v040: 旧実装は「5分以内に未発火アラームがある」場合も reboot_pending=true で
+    //   延期していた。しかし reboot_pending を消化するのは finishAlarm() だけで、
+    //   アラームの MIDI 再生が失敗すると (input_handler.cpp: triggered=true のみで
+    //   finishAlarm を呼ばない) フラグが立ちっぱなしになり、以後 safeReboot() が
+    //   何度呼ばれても延期され続けて ESP.restart() に永久に到達しない。
+    //   = heap逼迫時の回収(再起動)が機能停止し、断片化が進んで fetch 自体が
+    //     落ちる、という重大な副作用があった。
+    //   再起動(~15秒)してもアラームは失われない: 再起動後の fetch で triggered は
+    //   グレース(at < now-600)で再評価され、直近・未来のアラームは改めて発火する。
+    //   よってアラーム直前でも安全に再起動してよい。
     if (midi_playing) {
         Serial.println("REBOOT DEFERRED: MIDI playing");
         reboot_pending = true;
         return;
-    }
-    time_t now = time(nullptr);
-    for (int i = 0; i < event_count; i++) {
-        if (!events[i].has_alarm) continue;
-        for (int k = 0; k < events[i].alarm_count; k++) {
-            if (events[i].triggered[k]) continue;
-            long remain = (long)(events[i].alarm_time[k] - now);
-            if (remain > 0 && remain < 300) {  // 5分以内
-                Serial.printf("REBOOT DEFERRED: alarm '%s' in %ld sec\n",
-                              events[i].summary(), remain);
-                reboot_pending = true;  // アラーム後にリブート
-                return;
-            }
-        }
     }
     Serial.println("=== Silent reboot ===");
     Serial.flush();
@@ -394,9 +391,13 @@ void loop() {
                 Serial.println("ICS fetch skipped - SD unhealthy");
                 last_fetch = now;
             } else {
-                // ヒープ断片化 → リブート（String排除後は閾値を大幅引き下げ）
-                if ((int)ESP.getMaxAllocHeap() < 10000) {
-                    Serial.printf("*** REBOOT: heap fragmented, maxBlock:%d ***\n",
+                // v040: heap回収はここ(=次フェッチ直前)に一本化。
+                //   この時点では前サイクルの最新データが既に画面に出ているため、
+                //   サイレント再起動しても表示は維持される（描画前リブートで
+                //   「更新されない」と見える問題を回避）。SSLハンドシェイクに必要な
+                //   連続ブロックを確保できなくなる前に予防的に再生する。
+                if ((int)ESP.getMaxAllocHeap() < 38000) {
+                    Serial.printf("*** Pre-fetch heap recycle: maxBlock:%d < 38KB ***\n",
                                   ESP.getMaxAllocHeap());
                     safeReboot();
                 }

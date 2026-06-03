@@ -247,6 +247,7 @@ bool downloadMidi(const String& filename, String& localPath) {
     uint8_t buf[512];
     unsigned long t0 = millis();
     while (client->connected() || client->available()) {
+        esp_task_wdt_reset();              // アラーム発火パスでのDLハング→WDT再起動を防止
         if (millis() - t0 > 30000) break;  // 30秒タイムアウト
         int avail = client->available();
         if (avail <= 0) { delay(1); continue; }

@@ -22,7 +22,11 @@
 #define COL_NO_EVENT_TEXT     12    // 「予定なし」文字
 
 // カーソル（選択行）
-#define COL_CURSOR_BG          4    // 選択行の背景（0=黒 ～ 15=白）
+//   v040: 選択行を灰色背景で塗ると「未来予定が灰色に見える」ため廃止。
+//         選択はアンダースコア(下線)で示す。COL_CURSOR_BG は更新カーソル等の
+//         互換のため残置（未使用）。
+#define COL_CURSOR_BG          4    // (旧) 選択行の背景。現在は未使用
+#define COL_SEL_UNDERLINE     15    // 選択行のアンダースコア(下線) 0=白 ～ 15=黒
 
 // 変更行ハイライト（fetch後に表示内容が変わった行）
 #define COL_CHANGED_BG         2    // 薄い灰色

@@ -14,6 +14,7 @@ int utf8CharBytes(uint8_t c) {
 
 String utf8Substring(const String& s, int maxWidth) {
     String result;
+    result.reserve(maxWidth * 3 + 1);  // 1文字ずつの再確保を回避（断片化緩和）
     int width = 0;
     int i = 0;
 

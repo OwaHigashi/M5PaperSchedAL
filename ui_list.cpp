@@ -124,6 +124,13 @@ static void drawEventRow(int evtIdx, int y, bool highlighted, int nextEventIdx) 
         canvas.drawLine(10, y + rowH - 4, 530, y + rowH - 4, COL_NEXT_EVENT_LINE);
     }
 
+    // v040: 選択行はアンダースコア(下線)で示す（灰色背景は使わない＝未来予定が
+    //       灰色に見える問題を解消）。行末いっぱいに2px下線。
+    if (highlighted) {
+        canvas.drawLine(0, y + rowH - 3, 540, y + rowH - 3, COL_SEL_UNDERLINE);
+        canvas.drawLine(0, y + rowH - 2, 540, y + rowH - 2, COL_SEL_UNDERLINE);
+    }
+
     canvas.setTextColor(COL_TEXT);
 }
 
@@ -166,12 +173,12 @@ void updateListCursor(int old_sel, int new_sel) {
         }
     }
 
-    // 旧カーソル行: ハイライト除去
+    // 旧カーソル行: 下線除去（背景クリアして再描画）
     canvas.fillRect(0, row_y0[old_d], 540, rowH, COL_BG);
     drawEventRow(old_sel, row_y0[old_d], false, nextEventIdx);
 
-    // 新カーソル行: ハイライト設定
-    canvas.fillRect(0, row_y0[new_d], 540, rowH, COL_CURSOR_BG);
+    // 新カーソル行: 下線付きで再描画（灰色背景は使わない）
+    canvas.fillRect(0, row_y0[new_d], 540, rowH, COL_BG);
     drawEventRow(new_sel, row_y0[new_d], true, nextEventIdx);
 
     // フッタのページ情報を更新
@@ -402,9 +409,8 @@ void drawList(bool fast, bool skip_push, bool highlight_changes, bool clean_refr
 
         bool hl = (i == selected_event);
         bool changed = highlight_changes && displayed < MAX_DISPLAY_ROWS && row_changed[displayed];
-        if (hl) {
-            canvas.fillRect(0, y, 540, rowH, COL_CURSOR_BG);
-        } else if (changed) {
+        // v040: 選択行の灰色背景は廃止（下線で示す）。変更行ハイライトのみ背景着色。
+        if (changed) {
             canvas.fillRect(0, y, 540, rowH, COL_CHANGED_BG);
         }
 

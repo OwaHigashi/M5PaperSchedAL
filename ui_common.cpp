@@ -152,8 +152,8 @@ void partialRefreshNextLine() {
         for (int d = 0; d < displayed_count; d++) {
             if (row_event_idx[d] == displayed_next_event_idx) {
                 int y = row_y0[d];
-                int bg = (row_event_idx[d] == selected_event) ? COL_CURSOR_BG : COL_BG;
-                canvas.fillRect(10, y + rowH - 5, 520, 2, bg);
+                // v040: 選択行も灰色背景は使わない → 常に白で消去
+                canvas.fillRect(10, y + rowH - 5, 520, 2, COL_BG);
                 // アンダーライン付近の8行分を部分プッシュ
                 int strip_y = y + rowH - 8;
                 M5.EPD.WritePartGram4bpp(0, strip_y, 540, 8, buf_ptr + strip_y * stride);

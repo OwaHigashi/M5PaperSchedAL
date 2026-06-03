@@ -43,6 +43,11 @@ static void* psram_calloc(size_t n, size_t size) {
         if (p) {
             mbed_alloc_internal_bytes += total;
             mbed_alloc_internal_count++;
+            // [LEAK] 大きめ(>=4KB)の確保が内部DRAMに落ちた瞬間を可視化。
+            //   TLS I/Oバッファ(~16KB×2)がここに出るなら、それがリーク主犯。
+            if (total >= 4096)
+                Serial.printf("[LEAK] mbed INTERNAL fallback %u bytes (PSRAM full?)\n",
+                              (unsigned)total);
         }
     }
     return p;
@@ -87,6 +92,12 @@ static const int DESC_BUF      = 2048;  // 説明文
 static const int MIDI_FILE_BUF = 128;   // MIDIファイル名
 static const int CONTENT_BUF   = 256;   // アラームマーカー内容
 static const int NORM_BUF      = 512;   // 全角正規化用
+
+//==============================================================================
+// 表示ウィンドウ
+//   v040: 負荷軽減のため「今日0:00 〜 2週間先」のみ取り込む。過去は一切採らない。
+//==============================================================================
+static const int FUTURE_WINDOW_DAYS = 14;   // 2週間先まで
 
 //==============================================================================
 // char ユーティリティ
@@ -222,6 +233,7 @@ bool parseAlarmMarker(const char* s_raw, bool is_summary,
                       int& duration_sec, int& repeat_count) {
     static char* norm = nullptr;  // PSRAM上に配置
     if (!norm) norm = (char*)ps_malloc(NORM_BUF);
+    if (!norm) { found = false; return false; }   // PSRAM枯渇時のNULL書込み防止
     normalizeFullWidthBuf(s_raw, norm, NORM_BUF);
     const char* s = norm;
     int sLen = strlen(s);
@@ -264,6 +276,7 @@ bool parseAlarmMarker(const char* s_raw, bool is_summary,
 
         static char* content = nullptr;
         if (!content) content = (char*)ps_malloc(CONTENT_BUF);
+        if (!content) return found;   // PSRAM枯渇: 既知分だけ返す
         substrCopy(content, s, p + 1, endExcl, CONTENT_BUF);
 
         bool blockHasOffset = false;
@@ -432,6 +445,7 @@ static bool readUnfoldedLine(WiFiClient* stream, char* line, int lineSize,
         // 次の行をtempバッファに仮読み（PSRAM上に確保）
         static char* nextLine = nullptr;
         if (!nextLine) nextLine = (char*)ps_malloc(LINE_BUF);
+        if (!nextLine) break;   // PSRAM枯渇: unfold諦めて現行行を返す
         if (!readRawLine(stream, nextLine, LINE_BUF)) break;
 
         if (nextLine[0] == ' ' || nextLine[0] == '\t') {
@@ -452,18 +466,46 @@ static bool readUnfoldedLine(WiFiClient* stream, char* line, int lineSize,
 }
 
 // 1つのVEVENTをevents[]に登録
-static void registerEvent(const char* dtstart_raw, const char* summary, const char* desc) {
+//==============================================================================
+// 繰り返し予定(RRULE)展開用ヘルパ
+//==============================================================================
+
+// 指定 time_t と同じ日の 0:00 を返す
+static time_t midnightOf(time_t t) {
+    struct tm x; localtime_r(&t, &x);
+    x.tm_hour = 0; x.tm_min = 0; x.tm_sec = 0; x.tm_isdst = -1;
+    return mktime(&x);
+}
+
+// 当該月の日数 (mon0: 0-11)
+static int daysInMonth(int year, int mon0) {
+    static const int dm[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+    int d = dm[mon0];
+    if (mon0 == 1 && ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0)) d = 29;
+    return d;
+}
+
+// iCal 曜日コード(SU/MO/..) → tm_wday(Sun=0..Sat=6)。不正なら -1
+static int icalWdayToTm(const char* code) {
+    if (!strncmp(code, "SU", 2)) return 0;
+    if (!strncmp(code, "MO", 2)) return 1;
+    if (!strncmp(code, "TU", 2)) return 2;
+    if (!strncmp(code, "WE", 2)) return 3;
+    if (!strncmp(code, "TH", 2)) return 4;
+    if (!strncmp(code, "FR", 2)) return 5;
+    if (!strncmp(code, "SA", 2)) return 6;
+    return -1;
+}
+
+//==============================================================================
+// 1件の発生(occurrence)を events[] に格納
+//   ※ ウィンドウ判定は呼び出し側で済ませること
+//==============================================================================
+static void storeOccurrence(time_t st, bool is_allday,
+                            const char* summary, const char* desc) {
     if (event_count >= MAX_EVENTS) return;
 
     time_t now = time(nullptr);
-    time_t st = 0;
-    bool is_allday = false;
-    if (!parseDT(dtstart_raw, st, is_allday)) return;
-    // 過去ウィンドウ: 7日前まで取り込む
-    //   trimEventsAroundToday() が過去最大10件まで表示保持するため、
-    //   24h 固定だと「画面に残っているのに再fetchで取り込まれず、編集が反映されない」
-    //   という状態が発生する。表示されうる過去イベントは必ず再パースする。
-    if (st <= now - 7 * 86400 || st >= now + 30 * 86400) return;
 
     int parsed_offsets[MAX_ALARMS_PER_EVENT];
     int parsed_off_n = 0;
@@ -576,6 +618,218 @@ static void registerEvent(const char* dtstart_raw, const char* summary, const ch
     event_count++;
 }
 
+//==============================================================================
+// RRULE を展開して [winStart, winEnd) 内の発生を storeOccurrence() で登録
+//   対応: FREQ=DAILY/WEEKLY/MONTHLY/YEARLY, INTERVAL, BYDAY(序数付き含む),
+//         BYMONTHDAY, COUNT, UNTIL, EXDATE
+//   ※ ウィンドウが最大2週間のため、各イベントの発生数は高々15件
+//==============================================================================
+static void expandRecurring(time_t base, bool is_allday, const char* rrule,
+                            const char* summary, const char* desc,
+                            const char* exdate_raw,
+                            time_t winStart, time_t winEnd) {
+    // ── RRULE パース ──
+    char freq[12]; freq[0] = '\0';
+    int  interval = 1;
+    long count = 0;
+    time_t until = 0;
+    int byday_wd[8];  int byday_ord[8]; int n_byday = 0;
+    int bymonthday[8]; int n_bymd = 0;
+
+    char rbuf[256]; strlcpy(rbuf, rrule, sizeof(rbuf));
+    char* sp = nullptr;
+    for (char* tok = strtok_r(rbuf, ";", &sp); tok; tok = strtok_r(nullptr, ";", &sp)) {
+        char* eq = strchr(tok, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        const char* key = tok;
+        char* val = eq + 1;
+        if (!strcmp(key, "FREQ")) {
+            strlcpy(freq, val, sizeof(freq));
+        } else if (!strcmp(key, "INTERVAL")) {
+            interval = atoi(val); if (interval < 1) interval = 1;
+        } else if (!strcmp(key, "COUNT")) {
+            count = atol(val);
+        } else if (!strcmp(key, "UNTIL")) {
+            // UNTIL=DATE(終日形式)は「その日いっぱい」を含意。時刻付き発生が
+            // 最終日に脱落しないよう、当日の終端(+86399秒)まで許容する。
+            bool ad;
+            if (parseDT(val, until, ad) && ad) until += 86399;
+        } else if (!strcmp(key, "BYDAY")) {
+            char* sp2 = nullptr;
+            for (char* d = strtok_r(val, ",", &sp2); d && n_byday < 8;
+                 d = strtok_r(nullptr, ",", &sp2)) {
+                while (*d == ' ') d++;
+                int ord = 0;
+                const char* p = d;
+                if (*p == '+' || *p == '-' || isdigit((unsigned char)*p)) {
+                    ord = atoi(p);
+                    while (*p == '+' || *p == '-' || isdigit((unsigned char)*p)) p++;
+                }
+                int wd = icalWdayToTm(p);
+                if (wd >= 0) { byday_wd[n_byday] = wd; byday_ord[n_byday] = ord; n_byday++; }
+            }
+        } else if (!strcmp(key, "BYMONTHDAY")) {
+            char* sp2 = nullptr;
+            for (char* d = strtok_r(val, ",", &sp2); d && n_bymd < 8;
+                 d = strtok_r(nullptr, ",", &sp2)) {
+                bymonthday[n_bymd++] = atoi(d);
+            }
+        }
+    }
+    if (freq[0] == '\0') return;
+
+    bool isDaily   = !strcmp(freq, "DAILY");
+    bool isWeekly  = !strcmp(freq, "WEEKLY");
+    bool isMonthly = !strcmp(freq, "MONTHLY");
+    bool isYearly  = !strcmp(freq, "YEARLY");
+    if (!isDaily && !isWeekly && !isMonthly && !isYearly) return;
+
+    struct tm bt; localtime_r(&base, &bt);
+    int bH = bt.tm_hour, bM = bt.tm_min, bS = bt.tm_sec;
+    time_t baseMid = midnightOf(base);
+
+    // ── EXDATE パース (除外日を Y*10000+M*100+D で保持) ──
+    int exkeys[64]; int n_ex = 0;
+    if (exdate_raw && exdate_raw[0]) {
+        char ebuf[1024]; strlcpy(ebuf, exdate_raw, sizeof(ebuf));
+        char* sp3 = nullptr;
+        for (char* t = strtok_r(ebuf, ",", &sp3); t && n_ex < 64;
+             t = strtok_r(nullptr, ",", &sp3)) {
+            while (*t == ' ') t++;
+            time_t et; bool ad;
+            if (parseDT(t, et, ad)) {
+                struct tm xt; localtime_r(&et, &xt);
+                exkeys[n_ex++] = (xt.tm_year + 1900) * 10000 +
+                                 (xt.tm_mon + 1) * 100 + xt.tm_mday;
+            }
+        }
+    }
+
+    // ── 発生日ルール判定 (dMid: 候補日の0:00, dt: その broken-down) ──
+    auto matches = [&](time_t dMid, const struct tm& dt) -> bool {
+        long dayDiff = (long)((dMid - baseMid) / 86400);
+        if (dayDiff < 0) return false;
+        if (isDaily) {
+            return (dayDiff % interval) == 0;
+        }
+        if (isWeekly) {
+            bool wdOk = false;
+            if (n_byday > 0) {
+                for (int i = 0; i < n_byday; i++)
+                    if (byday_wd[i] == dt.tm_wday) { wdOk = true; break; }
+            } else {
+                wdOk = (dt.tm_wday == bt.tm_wday);
+            }
+            if (!wdOk) return false;
+            if (interval == 1) return true;
+            // 週境界(WKST=MO想定)の差で interval を判定
+            long bw = baseMid - (long)((bt.tm_wday + 6) % 7) * 86400;
+            long cw = dMid    - (long)((dt.tm_wday + 6) % 7) * 86400;
+            long wdiff = (cw - bw) / (7 * 86400);
+            return (wdiff % interval) == 0;
+        }
+        if (isMonthly) {
+            int mdiff = (dt.tm_year * 12 + dt.tm_mon) - (bt.tm_year * 12 + bt.tm_mon);
+            if (mdiff < 0 || (mdiff % interval) != 0) return false;
+            if (n_byday > 0) {
+                for (int i = 0; i < n_byday; i++) {
+                    if (byday_wd[i] != dt.tm_wday) continue;
+                    int ord = byday_ord[i];
+                    if (ord == 0) return true;   // 序数なし → 毎回その曜日
+                    int dim = daysInMonth(dt.tm_year + 1900, dt.tm_mon);
+                    int nthFromStart = (dt.tm_mday - 1) / 7 + 1;
+                    int nthFromEnd   = (dim - dt.tm_mday) / 7 + 1;
+                    if (ord > 0 && nthFromStart == ord) return true;
+                    if (ord < 0 && nthFromEnd == -ord) return true;
+                }
+                return false;
+            } else if (n_bymd > 0) {
+                int dim = daysInMonth(dt.tm_year + 1900, dt.tm_mon);
+                for (int i = 0; i < n_bymd; i++) {
+                    int md = bymonthday[i];
+                    int target = (md > 0) ? md : (dim + 1 + md);  // -1 = 月末
+                    if (dt.tm_mday == target) return true;
+                }
+                return false;
+            } else {
+                return dt.tm_mday == bt.tm_mday;
+            }
+        }
+        // YEARLY
+        int ydiff = dt.tm_year - bt.tm_year;
+        if (ydiff < 0 || (ydiff % interval) != 0) return false;
+        return dt.tm_mon == bt.tm_mon && dt.tm_mday == bt.tm_mday;
+    };
+
+    // ── COUNT 指定 (かつ UNTIL 無し) → COUNT 回目の発生時刻を until に変換 ──
+    if (count > 0 && until == 0) {
+        long seen = 0;
+        time_t occEnd = base;
+        for (time_t d = baseMid; (d - baseMid) <= (time_t)4000 * 86400; d += 86400) {
+            // 表示ウィンドウ外は描画しないので、winEnd を超えたら打ち切る。
+            // (DAILY等で DTSTART が数年前だと最悪4000反復＝fetch中のCPU/WDT圧迫)
+            if (d > winEnd) break;
+            struct tm dt; localtime_r(&d, &dt);
+            if (!matches(d, dt)) continue;
+            struct tm ot = dt; ot.tm_hour = bH; ot.tm_min = bM; ot.tm_sec = bS; ot.tm_isdst = -1;
+            time_t occ = mktime(&ot);
+            if (occ < base) continue;
+            seen++; occEnd = occ;
+            if (seen >= count) break;
+        }
+        until = occEnd;
+    }
+
+    // ── ウィンドウ内を日単位でスキャン (最大15日) ──
+    time_t scanStart = (baseMid > winStart) ? baseMid : winStart;
+    for (time_t d = scanStart; d <= winEnd; d += 86400) {
+        struct tm dt; localtime_r(&d, &dt);
+        if (!matches(d, dt)) continue;
+
+        struct tm ot = dt; ot.tm_hour = bH; ot.tm_min = bM; ot.tm_sec = bS; ot.tm_isdst = -1;
+        time_t occ = mktime(&ot);
+        if (occ < base) continue;
+        if (until && occ > until) break;
+        if (occ < winStart || occ >= winEnd) continue;
+
+        int dkey = (dt.tm_year + 1900) * 10000 + (dt.tm_mon + 1) * 100 + dt.tm_mday;
+        bool excluded = false;
+        for (int i = 0; i < n_ex; i++) if (exkeys[i] == dkey) { excluded = true; break; }
+        if (excluded) continue;
+
+        storeOccurrence(occ, is_allday, summary, desc);
+        if (event_count >= MAX_EVENTS) break;
+    }
+}
+
+//==============================================================================
+// 1つのVEVENTをevents[]に登録 (単発 or 繰り返し)
+//==============================================================================
+static void registerEvent(const char* dtstart_raw, const char* summary,
+                          const char* desc, const char* rrule, const char* exdate) {
+    if (event_count >= MAX_EVENTS) return;
+
+    time_t now = time(nullptr);
+    time_t st = 0;
+    bool is_allday = false;
+    if (!parseDT(dtstart_raw, st, is_allday)) return;
+
+    // v040: 今日0:00 〜 2週間先 のみ取り込む（過去ゼロ）
+    time_t winStart = midnightOf(now);
+    time_t winEnd   = now + (time_t)FUTURE_WINDOW_DAYS * 86400;
+
+    // 繰り返し予定 → ウィンドウ内の各発生を展開
+    if (rrule && rrule[0] != '\0') {
+        expandRecurring(st, is_allday, rrule, summary, desc, exdate, winStart, winEnd);
+        return;
+    }
+
+    // 単発予定
+    if (st < winStart || st >= winEnd) return;
+    storeOccurrence(st, is_allday, summary, desc);
+}
+
 // ストリーミングパーサー本体
 static int parseICSStream(WiFiClient* stream) {
     bool inEvent = false;
@@ -591,15 +845,23 @@ static int parseICSStream(WiFiClient* stream) {
         pushback = (char*)ps_malloc(PUSHBACK_BUF);
         desc     = (char*)ps_malloc(DESC_BUF);
     }
-    // スタック節約: summary も static (同時実行なし)
+    if (!line || !pushback || !desc) {   // PSRAM枯渇: パース中止(クラッシュ防止)
+        Serial.println("ICS_STREAM: FATAL ps_malloc failed - abort parse");
+        return event_count;
+    }
+    // スタック節約: summary/rrule/exdate も static (同時実行なし)
     char dtstart_raw[DTSTART_BUF];
     static char summary[SUMMARY_BUF];
+    static char rrule[256];
+    static char exdate[1024];
 
     line[0] = '\0';
     pushback[0] = '\0';
     dtstart_raw[0] = '\0';
     summary[0] = '\0';
     desc[0] = '\0';
+    rrule[0] = '\0';
+    exdate[0] = '\0';
 
     Serial.printf("ICS_STREAM: Start parsing (heap: %d)\n", ESP.getFreeHeap());
 
@@ -612,13 +874,15 @@ static int parseICSStream(WiFiClient* stream) {
             dtstart_raw[0] = '\0';
             summary[0] = '\0';
             desc[0] = '\0';
+            rrule[0] = '\0';
+            exdate[0] = '\0';
             continue;
         }
 
         if (strcmp(line, "END:VEVENT") == 0) {
             parsed_events++;
             if (inEvent) {
-                registerEvent(dtstart_raw, summary, desc);
+                registerEvent(dtstart_raw, summary, desc, rrule, exdate);
                 if (event_count >= MAX_EVENTS) {
                     Serial.println("ICS_STREAM: MAX_EVENTS reached");
                     break;
@@ -628,6 +892,8 @@ static int parseICSStream(WiFiClient* stream) {
             dtstart_raw[0] = '\0';
             summary[0] = '\0';
             desc[0] = '\0';
+            rrule[0] = '\0';
+            exdate[0] = '\0';
             continue;
         }
 
@@ -651,6 +917,13 @@ static int parseICSStream(WiFiClient* stream) {
             } else {
                 safeCopy(desc, val, DESC_BUF);
             }
+        } else if (strncmp(line, "RRULE", 5) == 0 && (line[5] == ':' || line[5] == ';')) {
+            safeCopy(rrule, colon + 1, 256);
+        } else if (strncmp(line, "EXDATE", 6) == 0 && (line[6] == ':' || line[6] == ';')) {
+            // 複数 EXDATE 行はカンマ区切りで連結
+            int cur = strlen(exdate);
+            if (cur > 0 && cur < (int)1024 - 2) { exdate[cur++] = ','; exdate[cur] = '\0'; }
+            strlcat(exdate, colon + 1, 1024);
         }
     }
 
@@ -732,6 +1005,7 @@ static int doFetchURL(const char* url_str) {
     WiFiClientSecure client;
     client.setInsecure();
     client.setTimeout(15);
+    client.setHandshakeTimeout(15);   // 既定120s→短縮。ハンドシェイク滞留(32KB I/Oバッファ占有)を抑制
     Serial.printf("SSL client initialized (heap: %d, maxBlock: %d)\n",
                   ESP.getFreeHeap(), ESP.getMaxAllocHeap());
     dumpHeapTag("WiFiClientSecure:after_init");
@@ -817,6 +1091,17 @@ static int doFetchURL(const char* url_str) {
     // ── ICSボディをストリーミング解析（events[]にアペンド） ──
     int result = parseICSStream(&client);
     dumpHeapTag("parseICSStream:after");
+    // MAX_EVENTS 到達等で本文を読み残した場合に備え、残りを読み捨ててから切断
+    // （lwip pbuf / WiFi RXバッファの即時回収 → 断片化緩和）
+    {
+        uint8_t drain[256];
+        unsigned long td = millis();
+        while ((client.connected() || client.available()) && millis() - td < 2000) {
+            int n = client.available();
+            if (n <= 0) { delay(1); continue; }
+            client.read(drain, n > (int)sizeof(drain) ? (int)sizeof(drain) : n);
+        }
+    }
     client.stop();
     dumpHeapTag("client.stop:after");
     Serial.printf("SSL cleanup done (heap:%d maxBlock:%d stack_free:%d)\n",
@@ -1029,18 +1314,13 @@ bool fetchAndUpdate() {
         return false;
     }
     if (incomplete_fetch) {
-        Serial.printf("*** Partial fetch (fail:%d skip:%d) — accepting %d events (prev:%d) ***\n",
+        // v040: 「1本でも失敗したら即サイレント再起動」(v038) を撤廃。
+        //   3URL中1本が一時的に落ちただけで再起動ループになり、画面が永久に
+        //   更新されない（＝何も見えない）主因だった。
+        //   部分成功したデータをそのまま採用・描画し、失敗したURLは次回pollで
+        //   再取得する。heap逼迫時の回収は loop() 冒頭の maxBlock チェックに一本化。
+        Serial.printf("*** Partial fetch (fail:%d skip:%d) — accepting %d events and rendering (prev:%d) ***\n",
                       fail_count, skip_count, event_count, prev_count);
-        // v038: ~35KB/cycle の heap leak があり、数サイクル後に URL2/3 の SSL connect が
-        //       落ちる（= fch2X fch3X が常時表示される）。WiFi が生きているなら原因は
-        //       heap とみなしてサイレント再起動で heap を再生する。WiFi 切断中は
-        //       ネットワーク障害の可能性があるので reboot loop 防止のため見送る。
-        //       e-paper は残像保持なので pushCanvas せずに restart しても画面は前の
-        //       状態を維持し、再起動後の fetch で自然に更新される。
-        if (WiFi.status() == WL_CONNECTED) {
-            Serial.println("=== Partial fetch with WiFi up — suspect heap leak, silent reboot ===");
-            safeReboot();
-        }
     }
 
     // ── 全URLフェッチ完了後にソート＆トリム ──
@@ -1077,9 +1357,13 @@ bool fetchAndUpdate() {
         Serial.printf("  Total alarms: %d / %d events\n", alarm_count, event_count);
     }
 
+    // v040: ここでの「maxBlock<38KB なら即再起動」は撤廃。
+    //   フェッチ成功直後に描画前リブートすると、せっかく取得したデータが
+    //   画面に出ないまま再起動 → ユーザーには「更新されない」と見える。
+    //   heap逼迫による回収は loop() 冒頭(次サイクルのfetch直前)で行う。
+    //   その時点では今サイクルの最新データが既に描画済みなので画面は維持される。
     if (mb < 38000) {
-        Serial.printf("=== maxBlock %d < 38KB - proactive restart requested ===\n", mb);
-        safeReboot();
+        Serial.printf("=== maxBlock %d < 38KB - low, will recycle before next fetch ===\n", mb);
     }
 
     // ★ フェッチ成功時は常に再描画する（変更検出は不正確で「!」追加等を見逃すため）
