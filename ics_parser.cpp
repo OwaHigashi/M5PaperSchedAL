@@ -831,9 +831,14 @@ static void registerEvent(const char* dtstart_raw, const char* summary,
 }
 
 // ストリーミングパーサー本体
+//   戻り値: 取り込んだ累積 event_count。ただしストリームが END:VCALENDAR に
+//   到達せずに途切れた場合（=ダウンロード途中切断 / truncation）は -1 を返す。
+//   呼び出し側はこの場合、このURLの部分データを破棄して失敗扱いにする。
 static int parseICSStream(WiFiClient* stream) {
     bool inEvent = false;
     int parsed_events = 0;
+    bool sawCalEnd = false;     // END:VCALENDAR を見た = 完全に読み切った
+    bool reachedMax = false;    // MAX_EVENTS 到達で意図的に打ち切った（切断ではない）
 
     // ★ パーサーバッファをPSRAMに配置 → DRAM .bss を節約
     //    5分毎に呼ばれるが、同時実行はないので static で安全
@@ -869,6 +874,12 @@ static int parseICSStream(WiFiClient* stream) {
         trimBuf(line);
         if (line[0] == '\0') continue;
 
+        // ★ カレンダー終端 → ここまで来たら確実に最後まで読めている
+        if (strcmp(line, "END:VCALENDAR") == 0) {
+            sawCalEnd = true;
+            break;
+        }
+
         if (strcmp(line, "BEGIN:VEVENT") == 0) {
             inEvent = true;
             dtstart_raw[0] = '\0';
@@ -885,6 +896,7 @@ static int parseICSStream(WiFiClient* stream) {
                 registerEvent(dtstart_raw, summary, desc, rrule, exdate);
                 if (event_count >= MAX_EVENTS) {
                     Serial.println("ICS_STREAM: MAX_EVENTS reached");
+                    reachedMax = true;
                     break;
                 }
             }
@@ -927,8 +939,17 @@ static int parseICSStream(WiFiClient* stream) {
         }
     }
 
-    Serial.printf("ICS_STREAM: Complete - parsed %d VEVENTs, loaded %d (heap: %d)\n",
-                  parsed_events, event_count, ESP.getFreeHeap());
+    Serial.printf("ICS_STREAM: Complete - parsed %d VEVENTs, loaded %d (heap: %d) calEnd=%d max=%d\n",
+                  parsed_events, event_count, ESP.getFreeHeap(), sawCalEnd, reachedMax);
+
+    // ★ truncation検出: END:VCALENDAR を見ずにストリームが尽きた = 途中切断。
+    //   このときの部分データは信用できない（予定が欠落して「消えた」ように見える主因）。
+    //   -1 を返し、呼び出し側で部分データを破棄させる。MAX_EVENTS 到達は正常終了。
+    if (!sawCalEnd && !reachedMax) {
+        Serial.printf("ICS_STREAM: *** INCOMPLETE - no END:VCALENDAR (stream truncated), parsed %d ***\n",
+                      parsed_events);
+        return -1;
+    }
 
     // ★ sortEvents/trimEventsAroundToday は呼ばない
     //   複数URL対応: 全URL fetch後にfetchAndUpdate()側で実行
@@ -1119,13 +1140,26 @@ static int doFetchURL(const char* url_str) {
                   (unsigned)(mbed_alloc_psram_count + mbed_alloc_internal_count),
                   (unsigned)mbed_free_count);
 
+    // ★ truncation: parseICSStream が -1 を返した = END:VCALENDAR 未到達で切断。
+    //   このURLが今サイクルで追加した部分データを丸ごと巻き戻して失敗扱いにする。
+    //   → 単一URL構成なら event_count==0 となり、fetchAndUpdate 側で前回の
+    //     完全なデータに復帰する（＝予定が消えない）。複数URL構成なら、この
+    //     URLぶんだけ欠落するが他URLは保持され、次回pollで再取得される。
+    if (result < 0) {
+        int discard = event_count - count_before;
+        Serial.printf("URL truncated: discarding %d partial events (count %d->%d)\n",
+                      discard, event_count, count_before);
+        event_count = count_before;
+        return -1;
+    }
+
     int added = event_count - count_before;
     if (added > 0) {
         return added;
     }
 
-    // このURLからイベント追加なし
-    return (result >= 0) ? 0 : -1;
+    // このURLからイベント追加なし（正常に最後まで読めたが該当イベント0件）
+    return 0;
 }
 
 
