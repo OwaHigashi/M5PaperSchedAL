@@ -16,6 +16,7 @@ void drawSettings(bool fast) {
     int rowH = 60;
 
     static const char* labels[] = {
+        "SDカードログ機能",
         "ICS Update", "Debug Fetch", "WiFi SSID", "WiFi Pass",
         "ICS URL", "ICS User", "ICS Pass",
         "MIDI File", "MIDI URL", "MIDI Baud", "Port", "Alarm Offset",
@@ -39,6 +40,7 @@ void drawSettings(bool fast) {
         canvas.setTextSize(26);
         String val;
         switch (i) {
+            case SET_SD_LOG: val = config.sd_log_enabled ? "ON" : "OFF"; break;
             case SET_ICS_UPDATE: val = "[実行]"; break;
             case SET_DEBUG_FETCH: val = debug_fetch ? "ON (30s)" : "OFF"; break;
             case SET_WIFI_SSID: val = config.wifi_ssid; break;
@@ -99,6 +101,12 @@ void drawSettings(bool fast) {
 
 void handleSettingsSelect() {
     switch (settings_cursor) {
+        case SET_SD_LOG:
+            config.sd_log_enabled = !config.sd_log_enabled;
+            saveConfig();   // 診断機能なので即時永続化
+            Serial.printf("SD log: %s\n", config.sd_log_enabled ? "ON" : "OFF");
+            logLine("sdlog %s", config.sd_log_enabled ? "ON" : "OFF");
+            drawSettings(); break;
         case SET_DEBUG_FETCH:
             debug_fetch = !debug_fetch;
             Serial.printf("Debug fetch: %s (interval: %s)\n",

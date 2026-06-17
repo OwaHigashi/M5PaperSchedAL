@@ -87,6 +87,7 @@ bool displayContentChanged();  // row_changed[]も設定する
 // タイミング
 extern time_t last_fetch;
 extern int fetch_fail_count;
+extern unsigned long fetch_fail_since_ms;  // 連続フェッチ失敗(いずれかのURLがX)の起点millis。0=失敗なし
 extern bool debug_fetch;
 extern bool reboot_pending;
 extern unsigned long last_switch_check;
@@ -132,6 +133,10 @@ extern bool sw_l_prev, sw_r_prev, sw_p_prev;
 // config.cpp
 void loadConfig();
 void saveConfig();
+
+// logger.cpp — 縮約診断ログ (Serial + 任意でSDへロール記録)
+void logLine(const char* fmt, ...);
+void pollSerialCommands();   // USB経由のログ取得/削除コマンド処理
 
 // utf8_utils.cpp
 bool isUtf8LeadByte(uint8_t c);

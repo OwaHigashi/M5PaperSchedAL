@@ -55,6 +55,7 @@ int date_header_count = 0;
 
 time_t last_fetch = 0;
 int fetch_fail_count = 0;
+unsigned long fetch_fail_since_ms = 0;
 bool debug_fetch = false;
 bool reboot_pending = false;
 DisplayRow last_pushed[MAX_DISPLAY_ROWS];

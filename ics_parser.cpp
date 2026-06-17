@@ -1187,12 +1187,16 @@ bool fetchAndUpdate() {
                       ESP.getFreeHeap(), MIN_HEAP_FOR_FETCH);
         last_fetch = time(nullptr);
         fetch_fail_count++;
+        if (fetch_fail_since_ms == 0) fetch_fail_since_ms = millis();
+        logLine("fetch SKIP heap-low h=%d", (int)ESP.getFreeHeap());
         return false;
     }
     if (WiFi.status() != WL_CONNECTED) {
         Serial.println("WiFi not connected, skipping ICS fetch");
         last_fetch = time(nullptr);
         fetch_fail_count++;
+        if (fetch_fail_since_ms == 0) fetch_fail_since_ms = millis();
+        logLine("fetch SKIP wifi-down st=%d", (int)WiFi.status());
         return false;
     }
 
@@ -1308,12 +1312,37 @@ bool fetchAndUpdate() {
     Serial.printf("All URLs done: %d/%d fetched, %d failed, %d skipped, %d events\n",
                   url_count - fail_count, total_urls, fail_count, skip_count, event_count);
 
+    // ── 失敗ストリーク更新（1本でも失敗/スキップがあれば継続、全成功で解除） ──
+    //    fetch_fail_since_ms は loop() の15分再起動判定に使われる。
+    bool incomplete_fetch = (fail_count > 0 || skip_count > 0);
+    if (incomplete_fetch) {
+        if (fetch_fail_since_ms == 0) fetch_fail_since_ms = millis();
+    } else {
+        fetch_fail_since_ms = 0;
+    }
+
+    // ── 縮約ログ（Serial + 任意でSD）: 全Xや薄文字障害の相関解析用に温度/電圧/RSSIも記録 ──
+    {
+        char st[MAX_FETCH_URLS + 1];
+        int sc = 0;
+        for (int i = 0; i < fetch_url_count && i < MAX_FETCH_URLS; i++) {
+            st[sc++] = (fetch_url_status[i] == 1) ? 'O' : (fetch_url_status[i] == 2) ? 'X' : '-';
+        }
+        st[sc] = '\0';
+        float tC = -99.0f;
+        if (M5.SHT30.UpdateData() == 0) tC = M5.SHT30.GetTemperature();
+        unsigned long streak_min = fetch_fail_since_ms ? (millis() - fetch_fail_since_ms) / 60000UL : 0;
+        logLine("fetch [%s] ev=%d add=%d fail=%d skip=%d h=%d mb=%d t=%.1f bat=%u rssi=%d fs=%lum",
+                st, event_count, total_added, fail_count, skip_count,
+                (int)ESP.getFreeHeap(), (int)ESP.getMaxAllocHeap(), tC,
+                (unsigned)M5.getBatteryVoltage(), (int)WiFi.RSSI(), streak_min);
+    }
+
     // ── URL失敗/スキップあり → 部分データ採用（ゼロ件のときだけ旧データ復帰） ──
     // 旧仕様: event_count < prev_count なら一律旧データへ復帰
     //   → 1本のURLが失敗し続けると起動時スナップショットから永久に更新されない
     //     (新規追加した予定が再起動まで見えないバグ v036 で修正)
     // 新仕様: 部分成功した新データを採用。次サイクルで失敗URLは再取得される。
-    bool incomplete_fetch = (fail_count > 0 || skip_count > 0);
     if (incomplete_fetch && event_count == 0) {
         Serial.printf("All fetches failed/skipped - restoring previous %d events\n", prev_count);
         events = prev_buf;

@@ -61,6 +61,7 @@ void setup() {
     M5.begin();
     M5.TP.SetRotation(90);
     M5.EPD.SetRotation(90);
+    M5.SHT30.Begin();   // 温度センサ（薄文字=温度依存波形 の相関解析用にログへ記録）
 
     // ★ M5.begin後にログ出力（Serial再初期化後でも確実に出る）
     Serial.printf("\n=== M5Paper Alarm starting... ver.%s ===\n", BUILD_VERSION);
@@ -236,6 +237,16 @@ void setup() {
         delay(2000);
     }
 
+    // ── 起動ログ（縮約・SD任意）: reset理由/版/heap/温度/電圧/WiFiを1行で残す ──
+    {
+        float tC = -99.0f;
+        if (M5.SHT30.UpdateData() == 0) tC = M5.SHT30.GetTemperature();
+        logLine("boot reset=%s(%d) ver=%s h=%d mb=%d t=%.1f bat=%u wifi=%d ev=%d",
+                (reason < 11) ? reasons[reason] : "?", (int)reason, BUILD_VERSION,
+                (int)ESP.getFreeHeap(), (int)ESP.getMaxAllocHeap(), tC,
+                (unsigned)M5.getBatteryVoltage(), (int)WiFi.status(), event_count);
+    }
+
     // canvas状態リセット → リスト描画
     canvas.setTextDatum(TL_DATUM);
     canvas.setTextColor(15);
@@ -296,6 +307,9 @@ void safeReboot() {
 //==============================================================================
 void loop() {
     unsigned long loop_start = millis();
+
+    // USB経由のログ取得/削除コマンド（LOGSIZE/LOGREAD/LOGCLEAR）
+    pollSerialCommands();
 
     // MIDI再生更新
     updateMidiPlayback();
@@ -408,6 +422,9 @@ void loop() {
                         // ★ WiFi再接続失敗 → 次回poll_intervalまでスキップ（連続リトライ防止）
                         Serial.println("WiFi reconnect failed, deferring next fetch");
                         last_fetch = now;
+                        // 失敗ストリーク起点（15分継続で下の判定が再起動 → WiFiを張り直す）
+                        if (fetch_fail_since_ms == 0) fetch_fail_since_ms = millis();
+                        logLine("wifi reconnect FAIL");
                     }
                 }
 
@@ -420,6 +437,21 @@ void loop() {
                 }
             }
         }
+    }
+
+    // ── フェッチ連続失敗が15分継続 → メモリ刷新のためサイレント再起動 ──
+    //    v041までは「全URL失敗かつheap逼迫(maxBlock<20KB)」しか再起動契機がなく、
+    //    SSLバッファがPSRAMに移ってmaxBlockが常に健全な現状では事実上発火しなかった。
+    //    → WiFi/サーバ障害で全Xのまま永久に再起動しない問題があった。
+    //    本判定は「1本でも失敗が15分継続」したら再起動する（1本でも成功すれば fetch_fail_since_ms=0）。
+    //    grace 15分により、一過性の失敗ではv038のような高速再起動ループにはならない。
+    if (ui_state == UI_LIST && fetch_fail_since_ms != 0 &&
+        (millis() - fetch_fail_since_ms) >= FETCH_FAIL_REBOOT_MS) {
+        unsigned long mins = (millis() - fetch_fail_since_ms) / 60000UL;
+        Serial.printf("*** Fetch failing for %lu min - reboot to recover ***\n", mins);
+        logLine("REBOOT fetch-fail %lumin", mins);
+        fetch_fail_since_ms = 0;   // 念のため(実際は再起動で消える)
+        safeReboot();
     }
 
     // ハートビート ● 明滅（UI_LIST時のみ、5秒ごと）

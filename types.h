@@ -6,7 +6,7 @@
 //==============================================================================
 // ビルドバージョン (※コード更新時はここを変更)
 //==============================================================================
-#define BUILD_VERSION "041"
+#define BUILD_VERSION "042"
 
 //==============================================================================
 // ピン定義
@@ -32,6 +32,10 @@
 #define ITEMS_PER_PAGE          12
 #define SD_CHECK_INTERVAL_MS    300000  // 5分
 #define MIN_HEAP_FOR_FETCH      20000   // ICSフェッチ前の最低ヒープ(byte) ※String排除後は低くてOK
+
+// ★ フェッチ連続失敗(=いずれかのURLがX)がこの時間継続したらメモリ刷新のため再起動。
+//    予定が一般に15分単位で組まれることを踏まえ15分。1本でも成功すればカウントは0に戻る。
+#define FETCH_FAIL_REBOOT_MS    (15UL * 60UL * 1000UL)  // 15分
 
 #define BAUD_OPTION_COUNT       3
 #define PORT_COUNT              3
@@ -59,6 +63,7 @@ struct Config {
     int max_events;
     int max_desc_bytes;
     int min_free_heap;          // ヒープ残量下限(KB)
+    bool sd_log_enabled;        // SDカードへの診断ログ記録 ON/OFF (SD劣化対策で切替可)
 };
 
 struct EventItem {
@@ -103,6 +108,7 @@ enum UiState {
 };
 
 enum SettingsItem {
+    SET_SD_LOG,
     SET_ICS_UPDATE,
     SET_DEBUG_FETCH,
     SET_WIFI_SSID,

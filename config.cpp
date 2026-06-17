@@ -24,6 +24,7 @@ void loadConfig() {
     config.max_events = 299;
     config.max_desc_bytes = 3500;
     config.min_free_heap = 40;
+    config.sd_log_enabled = true;   // 既定ON: 全X等の障害を確実に捕捉するため。SD負荷は1日数十KBで軽微
 
     if (!SD.exists(CONFIG_FILE)) {
         Serial.println("Config not found, using defaults");
@@ -66,6 +67,7 @@ void loadConfig() {
     if (doc["max_events"]) config.max_events = doc["max_events"];
     if (doc["max_desc_bytes"]) config.max_desc_bytes = doc["max_desc_bytes"];
     if (doc["min_free_heap"]) config.min_free_heap = doc["min_free_heap"];
+    if (doc.containsKey("sd_log_enabled")) config.sd_log_enabled = doc["sd_log_enabled"];
 
     if (config.max_events < 10) config.max_events = 10;
     if (config.max_events > MAX_EVENTS - 1) config.max_events = MAX_EVENTS - 1;
@@ -95,6 +97,7 @@ void loadConfig() {
     Serial.printf("  max_events: %d\n", config.max_events);
     Serial.printf("  max_desc_bytes: %d\n", config.max_desc_bytes);
     Serial.printf("  min_free_heap: %d\n", config.min_free_heap);
+    Serial.printf("  sd_log_enabled: %s\n", config.sd_log_enabled ? "true" : "false");
     Serial.println("=== END CONFIG ===");
 }
 
@@ -120,6 +123,7 @@ void saveConfig() {
     doc["max_events"] = config.max_events;
     doc["max_desc_bytes"] = config.max_desc_bytes;
     doc["min_free_heap"] = config.min_free_heap;
+    doc["sd_log_enabled"] = config.sd_log_enabled;
 
     File f = SD.open(CONFIG_FILE, FILE_WRITE);
     if (!f) {
