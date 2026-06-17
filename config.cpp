@@ -24,7 +24,7 @@ void loadConfig() {
     config.max_events = 299;
     config.max_desc_bytes = 3500;
     config.min_free_heap = 40;
-    config.sd_log_enabled = true;   // 既定ON: 全X等の障害を確実に捕捉するため。SD負荷は1日数十KBで軽微
+    config.sd_log_enabled = false;  // 既定OFF: SDカード劣化を避けるため。診断時のみ設定メニューでON
 
     if (!SD.exists(CONFIG_FILE)) {
         Serial.println("Config not found, using defaults");
