@@ -417,9 +417,14 @@ void loop() {
                 //   サイレント再起動しても表示は維持される（描画前リブートで
                 //   「更新されない」と見える問題を回避）。SSLハンドシェイクに必要な
                 //   連続ブロックを確保できなくなる前に予防的に再生する。
-                if ((int)ESP.getMaxAllocHeap() < 38000) {
-                    Serial.printf("*** Pre-fetch heap recycle: maxBlock:%d < 38KB ***\n",
+                // v044: しきい値 38000→45000。リークで maxBlock は 38900 に張り付く（=38000を
+                //   割らない）ため旧判定は永久に発火せず、全Xに転落してから15分再起動に頼っていた。
+                //   45000 にすると 38900 プラトーで失敗する前に再生でき、全X時間がゼロになる。
+                //   ※これは出血止め。根治は doFetchURL の ~38KB/cycle 内部ヒープリーク調査 [[fetch_heap_leak]]。
+                if ((int)ESP.getMaxAllocHeap() < 45000) {
+                    Serial.printf("*** Pre-fetch heap recycle: maxBlock:%d < 45KB ***\n",
                                   ESP.getMaxAllocHeap());
+                    logLine("REBOOT heap-recycle mb=%d", (int)ESP.getMaxAllocHeap());
                     safeReboot();
                 }
 
