@@ -94,6 +94,7 @@ extern unsigned long last_switch_check;
 extern unsigned long last_interaction_ms;
 extern time_t last_alarm_debug;
 extern time_t last_auto_refresh;
+extern time_t last_gc16_cleanup;   // 最後にGC16フル掃除した時刻(薄文字対策)
 extern unsigned long last_sd_check_ms;
 
 // MIDI

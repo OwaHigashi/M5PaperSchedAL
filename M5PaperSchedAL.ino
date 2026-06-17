@@ -262,7 +262,11 @@ void setup() {
     Serial.printf("[DRAW] drawList: events=%d page_start=%d selected=%d silent=%s\n",
                   event_count, page_start, selected_event,
                   silent_mode ? "YES(skip push)" : "NO");
-    drawList(false, silent_mode);  // サイレント時はpushCanvasスキップ
+    // v042 fix1: サイレント再起動でもGC16でフル塗り直し。
+    //   従来は silent時 skip_push=true で「前画面保持」だったが、保持した画面が
+    //   GLR16由来で薄いと再起動後も薄いままだった。1回フラッシュしてでも濃さを保証する。
+    drawList(false, false);  // 常にGC16でpush
+    last_gc16_cleanup = time(nullptr);
     Serial.println("[DRAW] drawList complete");
 
     // ハートビート用ミニキャンバス (14x14)
@@ -379,15 +383,18 @@ void loop() {
                 partial_refresh_count = 0;
                 drawList();
             } else {
-                // ★ 毎時0分にGC16フルリフレッシュで灰色ゴースト除去（時報代わり）
+                // v042 fix2: GC16フル掃除を「毎時0分1回」→「GC16_CLEANUP_MIN分ごと」に短縮。
+                //   部分更新(GL16/DU)の蓄積で薄くなる前に濃さを回復する。fetch変化に依存せず
+                //   走るので、全X(トラブル)中も掃除される（=薄文字が長引かない）。
                 struct tm tmNow;
                 localtime_r(&now_t, &tmNow);
-                if (tmNow.tm_min == 0 && partial_refresh_count == 0) {
-                    partial_refresh_count = 1;  // 同じ0分内で再実行しないフラグ
-                    Serial.printf("AUTO-REFRESH: hourly GC16 cleanup (%02d:00)\n", tmNow.tm_hour);
+                if ((now_t - last_gc16_cleanup) >= (GC16_CLEANUP_MIN * 60)) {
+                    last_gc16_cleanup = now_t;
+                    partial_refresh_count = 0;
+                    Serial.printf("AUTO-REFRESH: GC16 cleanup (%02d:%02d, every %dmin)\n",
+                                  tmNow.tm_hour, tmNow.tm_min, GC16_CLEANUP_MIN);
                     drawList();  // GC16 full refresh
                 } else {
-                    if (tmNow.tm_min != 0) partial_refresh_count = 0;  // 0分が過ぎたらリセット
                     // ページ同じ → ヘッダー時刻 + 次イベントアンダーラインの部分更新のみ
                     partialRefreshHeader();
                     partialRefreshNextLine();
@@ -433,7 +440,15 @@ void loop() {
                     int before = event_count;
                     bool changed = fetchAndUpdate();
                     Serial.printf("Periodic fetch: %d -> %d events\n", before, event_count);
-                    if (changed && ui_state == UI_LIST) { scrollToToday(); partial_refresh_count = 0; drawList(false, false, false, true); }
+                    if (changed && ui_state == UI_LIST) {
+                        scrollToToday(); partial_refresh_count = 0;
+                        // v042 fix3: 夜間(誰も見ていない)は通常再描画もGC16(濃)にする。
+                        //   日中はGLR16(静かだが薄め)、夜間はGC16でフラッシュ気にせず濃さ優先。
+                        struct tm tmN; localtime_r(&now, &tmN);
+                        bool night = (tmN.tm_hour >= NIGHT_START_HOUR && tmN.tm_hour < NIGHT_END_HOUR);
+                        drawList(false, false, false, !night);  // clean_refresh: 日中true(GLR16)/夜間false(GC16)
+                        if (night) last_gc16_cleanup = now;
+                    }
                 }
             }
         }

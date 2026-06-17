@@ -65,6 +65,7 @@ unsigned long last_switch_check = 0;
 unsigned long last_interaction_ms = 0;
 time_t last_alarm_debug = 0;
 time_t last_auto_refresh = 0;
+time_t last_gc16_cleanup = 0;
 unsigned long last_sd_check_ms = 0;
 
 SimpleMIDIPlayer midi;
