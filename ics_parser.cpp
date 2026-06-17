@@ -622,6 +622,15 @@ static void storeOccurrence(time_t st, bool is_allday,
                     // 後付け!でも開始時刻 + 24h までは鳴らす（既に終わった予定は抑止）
                     events[idx].triggered[slot] = (st < now - LATE_ADD_GRACE);
                 }
+
+                // 診断(v047): 新規武装なのに即発火状態(過去アラーム)になったら記録。
+                //   通常fetchで carry に失敗し過去予定が再武装→誤発火する真因の特定用。
+                if (!events[idx].triggered[slot] && at <= now) {
+                    char ds[33]; substrCopy(ds, summary, 0, 32, sizeof(ds));
+                    logLine("ALARM-ARM-PAST '%s' off=%dm at=%ld now=%ld st=%ld init=%d prevbuf=%d",
+                            ds, parsed_offsets[k], (long)at, (long)now, (long)st,
+                            initial_fetch_done ? 1 : 0, prev_match ? 1 : 0);
+                }
             }
             events[idx].alarm_count++;
         }

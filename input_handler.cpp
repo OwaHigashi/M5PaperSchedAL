@@ -318,6 +318,14 @@ void checkAlarms() {
                       fireSlot, events[i].offset_min[fireSlot]);
         Serial.printf("  Event: %s\n", events[i].summary());
 
+        // 診断(v047): 発火の全コンテキストをSDログへ。誤発火(予定なし鳴動)の真因特定用。
+        //   at>now なら定刻発火。at≪now(過去)なら再フェッチによる過去アラーム再武装が疑わしい。
+        logLine("ALARM-FIRE i=%d slot=%d off=%dm at=%ld now=%ld late=%lds allday=%d ac=%d '%.40s'",
+                i, fireSlot, events[i].offset_min[fireSlot],
+                (long)events[i].alarm_time[fireSlot], (long)now,
+                (long)(now - events[i].alarm_time[fireSlot]),
+                events[i].is_allday ? 1 : 0, events[i].alarm_count, events[i].summary());
+
         // ntfy通知
         {
             struct tm st; localtime_r(&events[i].start, &st);

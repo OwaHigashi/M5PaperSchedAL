@@ -69,6 +69,11 @@ void loadConfig() {
     if (doc["min_free_heap"]) config.min_free_heap = doc["min_free_heap"];
     if (doc.containsKey("sd_log_enabled")) config.sd_log_enabled = doc["sd_log_enabled"];
 
+    // === 診断ビルド(v047): SDログを強制ON ===
+    //   config.json の保存値に関わらず常に有効化する。誤発火(予定なし鳴動)/二重下線の
+    //   再現データをSDへ確実に残すため。原因特定後はこの1行を削除し既定OFFへ戻すこと。
+    config.sd_log_enabled = true;
+
     if (config.max_events < 10) config.max_events = 10;
     if (config.max_events > MAX_EVENTS - 1) config.max_events = MAX_EVENTS - 1;
     if (config.max_desc_bytes < 100) config.max_desc_bytes = 100;
