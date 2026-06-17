@@ -125,22 +125,20 @@ void partialRefreshHeader() {
 }
 
 //==============================================================================
-// 「次の予定」マーカー = 破線
-//   選択行の下線(実線)と視覚的に区別するため破線で描く。色は黒のまま
-//   (部分更新のDUモードは2値で灰色が出ないため、色ではなく破線で区別する)。
+// 「次の予定」マーカー = ▶（太字）
+//   音符♪列の隣の専用列(LIST_NEXT_MARK_X)に太字の▶を描く。
+//   選択行の下線とは別表現なので一目で区別できる。
 //==============================================================================
 void drawNextEventMarker(int y, int rowH) {
-    int ly = y + rowH - 5;
-    for (int x = 10; x < 530; x += 18) {
-        int x2 = x + 10;
-        if (x2 > 530) x2 = 530;
-        canvas.drawLine(x, ly,     x2, ly,     COL_NEXT_EVENT_LINE);
-        canvas.drawLine(x, ly + 1, x2, ly + 1, COL_NEXT_EVENT_LINE);
-    }
+    (void)rowH;
+    canvas.setTextSize(28);
+    canvas.setTextColor(COL_ROW_TEXT);
+    drawTextBold("▶", LIST_NEXT_MARK_X, y + 9, 2);   // ▶ U+25B6
+    canvas.setTextColor(COL_TEXT);
 }
 
 //==============================================================================
-// 部分更新: 「次のイベント」アンダーラインの移動
+// 部分更新: 「次のイベント」▶マーカーの移動
 //==============================================================================
 void partialRefreshNextLine() {
     time_t now = time(nullptr);
@@ -162,31 +160,28 @@ void partialRefreshNextLine() {
     if (!buf_ptr) return;
     int stride = 540 / 2;  // 270 bytes/row (4bit grayscale)
 
-    // 旧アンダーラインを消去
+    // 旧▶マークを消去（▶列の周辺のみクリア。下線/本文は触らない）
     if (displayed_next_event_idx >= 0) {
         for (int d = 0; d < displayed_count; d++) {
             if (row_event_idx[d] == displayed_next_event_idx) {
                 int y = row_y0[d];
-                // v040: 選択行も灰色背景は使わない → 常に白で消去
-                canvas.fillRect(10, y + rowH - 5, 520, 2, COL_BG);
-                // アンダーライン付近の8行分を部分プッシュ
-                int strip_y = y + rowH - 8;
-                M5.EPD.WritePartGram4bpp(0, strip_y, 540, 8, buf_ptr + strip_y * stride);
-                M5.EPD.UpdateArea(0, strip_y, 540, 8, UPDATE_MODE_DU);
+                canvas.fillRect(LIST_NEXT_MARK_X - 2, y + 4, 32, rowH - 8, COL_BG);
+                // 行全体(全幅)の縦ストリップを部分プッシュ（4bppは全幅でストライド一致）
+                M5.EPD.WritePartGram4bpp(0, y, 540, rowH, buf_ptr + y * stride);
+                M5.EPD.UpdateArea(0, y, 540, rowH, UPDATE_MODE_DU);
                 break;
             }
         }
     }
 
-    // 新アンダーラインを描画
+    // 新▶マークを描画
     if (newNextIdx >= 0) {
         for (int d = 0; d < displayed_count; d++) {
             if (row_event_idx[d] == newNextIdx) {
                 int y = row_y0[d];
-                drawNextEventMarker(y, rowH);   // 破線（選択行の実線と区別）
-                int strip_y = y + rowH - 8;
-                M5.EPD.WritePartGram4bpp(0, strip_y, 540, 8, buf_ptr + strip_y * stride);
-                M5.EPD.UpdateArea(0, strip_y, 540, 8, UPDATE_MODE_DU);
+                drawNextEventMarker(y, rowH);   // ▶（太字）
+                M5.EPD.WritePartGram4bpp(0, y, 540, rowH, buf_ptr + y * stride);
+                M5.EPD.UpdateArea(0, y, 540, rowH, UPDATE_MODE_DU);
                 break;
             }
         }

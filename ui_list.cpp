@@ -82,12 +82,13 @@ static void drawEventRow(int evtIdx, int y, bool highlighted, int nextEventIdx) 
         showAlarmMark = anyPending;
     }
 
-    int maxWidth = config.text_wrap ? 24 : 28;
+    // ▶列(LIST_NEXT_MARK_X=124)を挿入したぶん本文開始を右へ。表示幅も少し詰める
+    int maxWidth = config.text_wrap ? 22 : 26;
     String dispSummary = utf8Substring(summary, maxWidth);
 
     const int TIME_X = 10;
     const int MARK_X = 96;
-    const int SUMMARY_X = 124;
+    const int SUMMARY_X = 152;   // ▶列(124〜)の右
 
     if (config.text_wrap && summary.length() > dispSummary.length()) {
         drawText(timeStr, TIME_X, y + 1);

@@ -187,7 +187,10 @@ void saveScreenshot();
 String formatTime(int hour, int minute);
 void partialRefreshHeader();
 void partialRefreshNextLine();
-void drawNextEventMarker(int y, int rowH);  // 「次の予定」破線マーカー(選択行の実線と区別)
+void drawNextEventMarker(int y, int rowH);  // 「次の予定」を▶マーク(太字)で示す
+
+// リスト行の列レイアウト（drawEventRow と partialRefreshNextLine で共有）
+#define LIST_NEXT_MARK_X   124   // 「次の予定」▶列（音符♪列の隣）
 
 // ui_list.cpp
 void scrollToToday();
