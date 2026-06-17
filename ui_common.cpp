@@ -125,6 +125,21 @@ void partialRefreshHeader() {
 }
 
 //==============================================================================
+// 「次の予定」マーカー = 破線
+//   選択行の下線(実線)と視覚的に区別するため破線で描く。色は黒のまま
+//   (部分更新のDUモードは2値で灰色が出ないため、色ではなく破線で区別する)。
+//==============================================================================
+void drawNextEventMarker(int y, int rowH) {
+    int ly = y + rowH - 5;
+    for (int x = 10; x < 530; x += 18) {
+        int x2 = x + 10;
+        if (x2 > 530) x2 = 530;
+        canvas.drawLine(x, ly,     x2, ly,     COL_NEXT_EVENT_LINE);
+        canvas.drawLine(x, ly + 1, x2, ly + 1, COL_NEXT_EVENT_LINE);
+    }
+}
+
+//==============================================================================
 // 部分更新: 「次のイベント」アンダーラインの移動
 //==============================================================================
 void partialRefreshNextLine() {
@@ -168,8 +183,7 @@ void partialRefreshNextLine() {
         for (int d = 0; d < displayed_count; d++) {
             if (row_event_idx[d] == newNextIdx) {
                 int y = row_y0[d];
-                canvas.drawLine(10, y + rowH - 5, 530, y + rowH - 5, COL_NEXT_EVENT_LINE);
-                canvas.drawLine(10, y + rowH - 4, 530, y + rowH - 4, COL_NEXT_EVENT_LINE);
+                drawNextEventMarker(y, rowH);   // 破線（選択行の実線と区別）
                 int strip_y = y + rowH - 8;
                 M5.EPD.WritePartGram4bpp(0, strip_y, 540, 8, buf_ptr + strip_y * stride);
                 M5.EPD.UpdateArea(0, strip_y, 540, 8, UPDATE_MODE_DU);

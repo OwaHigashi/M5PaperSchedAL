@@ -38,7 +38,7 @@
 #define COL_ALARM_BADGE_BG    15    // バッジ背景（白）
 #define COL_ALARM_BADGE_FG     0    // バッジ文字（黒）
 
-// 「次の予定」区切り線
+// 「次の予定」区切り線（破線で描画。選択行の実線下線と区別。DUモードで出るよう黒のまま）
 #define COL_NEXT_EVENT_LINE   15    // 線の色
 
 // フッター（ボタン・ページ情報）

@@ -120,8 +120,7 @@ static void drawEventRow(int evtIdx, int y, bool highlighted, int nextEventIdx) 
     }
 
     if (evtIdx == nextEventIdx) {
-        canvas.drawLine(10, y + rowH - 5, 530, y + rowH - 5, COL_NEXT_EVENT_LINE);
-        canvas.drawLine(10, y + rowH - 4, 530, y + rowH - 4, COL_NEXT_EVENT_LINE);
+        drawNextEventMarker(y, rowH);   // 破線（選択行の実線下線と区別）
     }
 
     // v040: 選択行はアンダースコア(下線)で示す（灰色背景は使わない＝未来予定が
@@ -452,8 +451,9 @@ void drawList(bool fast, bool skip_push, bool highlight_changes, bool clean_refr
         struct tm al;
         localtime_r(&nextAlarm, &al);
         String alTime = formatTime(al.tm_hour, al.tm_min);
-        snprintf(buf, sizeof(buf), "次AL:%s", alTime.c_str());
-        drawText(buf, 380, 860);
+        // 日付を併記（「いつの22:50か」が分かるように）
+        snprintf(buf, sizeof(buf), "次AL %d/%d %s", al.tm_mon + 1, al.tm_mday, alTime.c_str());
+        drawText(buf, 290, 860);
     }
 
     // ページ情報

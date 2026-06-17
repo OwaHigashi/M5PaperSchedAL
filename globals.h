@@ -187,6 +187,7 @@ void saveScreenshot();
 String formatTime(int hour, int minute);
 void partialRefreshHeader();
 void partialRefreshNextLine();
+void drawNextEventMarker(int y, int rowH);  // 「次の予定」破線マーカー(選択行の実線と区別)
 
 // ui_list.cpp
 void scrollToToday();
