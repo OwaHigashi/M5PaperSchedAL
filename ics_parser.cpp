@@ -165,6 +165,21 @@ static int safeAtoi(const char* s) {
     return atoi(s);
 }
 
+// UTCの (年, 月1-12, 日, 時, 分, 秒) → Unix time。
+//   setenv/tzset/mktime を一切使わない純粋計算（Howard Hinnant days_from_civil）。
+//   旧実装は UTC変換のたびに setenv("TZ",...)+tzset() を2回呼んでおり、Googleの
+//   ICSはほぼ全timestampがUTC(Z)なので 1フェッチで数千回 → newlibが内部ヒープに
+//   tzname/環境文字列を確保し続けて約30KB/cycleリーク、全Xの真因だった(v045で根治)。
+static time_t timegm_pure(int y, int mo, int d, int h, int mi, int se) {
+    y -= (mo <= 2);
+    long era = (y >= 0 ? y : y - 399) / 400;
+    unsigned yoe = (unsigned)(y - era * 400);                          // [0, 399]
+    unsigned doy = (153 * (mo + (mo > 2 ? -3 : 9)) + 2) / 5 + d - 1;   // [0, 365]
+    unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;              // [0, 146096]
+    long days = era * 146097 + (long)doe - 719468;                     // 1970-01-01 → 0
+    return (time_t)days * 86400 + (time_t)h * 3600 + (time_t)mi * 60 + se;
+}
+
 //==============================================================================
 // 日時パース
 //==============================================================================
@@ -214,12 +229,8 @@ bool parseDT(const char* raw, time_t& out, bool& is_allday) {
         return out != (time_t)-1;
     }
 
-    setenv("TZ", "UTC0", 1);
-    tzset();
-    time_t u = mktime(&t);
-    setenv("TZ", TZ_JST, 1);
-    tzset();
-    out = u;
+    // v045: setenv/tzset を排除しヒープリークを根治（旧実装は↑コメント参照）
+    out = timegm_pure(y, mo, d, h, mi, se);
     return out != (time_t)-1;
 }
 
