@@ -6,7 +6,7 @@
 //==============================================================================
 // ビルドバージョン (※コード更新時はここを変更)
 //==============================================================================
-#define BUILD_VERSION "049"
+#define BUILD_VERSION "050"
 
 //==============================================================================
 // ピン定義
@@ -62,7 +62,6 @@ struct Config {
     uint32_t midi_baud;
     int alarm_offset_default;
     int port_select;            // 0=A, 1=B, 2=C
-    bool time_24h;
     bool text_wrap;
     int ics_poll_min;
     int play_duration;          // デフォルト鳴動時間(秒) 0=1曲
@@ -128,7 +127,6 @@ enum SettingsItem {
     SET_MIDI_BAUD,
     SET_PORT,
     SET_ALARM_OFFSET,
-    SET_TIME_FORMAT,
     SET_TEXT_WRAP,
     SET_ICS_POLL,
     SET_PLAY_DURATION,

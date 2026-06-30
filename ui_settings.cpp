@@ -20,7 +20,7 @@ void drawSettings(bool fast) {
         "ICS Update", "Debug Fetch", "WiFi SSID", "WiFi Pass",
         "ICS URL", "ICS User", "ICS Pass",
         "MIDI File", "MIDI URL", "MIDI Baud", "Port", "Alarm Offset",
-        "Time Format", "Text Display", "ICS Poll", "Play Duration",
+        "Text Display", "ICS Poll", "Play Duration",
         "Play Repeat", "Notify Topic", "Notify Test",
         "Sound Test", "Save & Exit"
     };
@@ -53,7 +53,6 @@ void drawSettings(bool fast) {
             case SET_MIDI_BAUD: val = String(config.midi_baud); break;
             case SET_PORT:      val = port_names[config.port_select]; break;
             case SET_ALARM_OFFSET: val = String(config.alarm_offset_default) + "分"; break;
-            case SET_TIME_FORMAT: val = config.time_24h ? "24h" : "12h"; break;
             case SET_TEXT_WRAP: val = config.text_wrap ? "折り返し" : "切り詰め"; break;
             case SET_ICS_POLL: val = String(config.ics_poll_min) + "分"; break;
             case SET_PLAY_DURATION: {
@@ -155,9 +154,6 @@ void handleSettingsSelect() {
             ui_state = UI_PORT_SELECT; drawPortSelect(); break;
         case SET_ALARM_OFFSET:
             config.alarm_offset_default = (config.alarm_offset_default + 5) % 65;
-            drawSettings(); break;
-        case SET_TIME_FORMAT:
-            config.time_24h = !config.time_24h;
             drawSettings(); break;
         case SET_TEXT_WRAP:
             config.text_wrap = !config.text_wrap;

@@ -53,15 +53,9 @@ void saveScreenshot() {
 }
 
 String formatTime(int hour, int minute) {
+    // 24時間制固定（12h表示は混乱の元のため廃止）
     char buf[16];
-    if (config.time_24h) {
-        snprintf(buf, sizeof(buf), "%02d:%02d", hour, minute);
-    } else {
-        const char* ampm = (hour < 12) ? "AM" : "PM";
-        int h12 = hour % 12;
-        if (h12 == 0) h12 = 12;
-        snprintf(buf, sizeof(buf), "%2d:%02d%s", h12, minute, ampm);
-    }
+    snprintf(buf, sizeof(buf), "%02d:%02d", hour, minute);
     return String(buf);
 }
 
