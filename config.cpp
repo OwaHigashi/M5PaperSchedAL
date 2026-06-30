@@ -16,6 +16,7 @@ void loadConfig() {
     config.midi_baud = DEFAULT_MIDI_BAUD;
     config.alarm_offset_default = DEFAULT_ALARM_OFFSET;
     config.port_select = 1;    // デフォルトPort B
+    config.time_24h = true;
     config.text_wrap = false;
     config.ics_poll_min = 30;
     config.play_duration = 0;  // 0=1曲
@@ -53,6 +54,7 @@ void loadConfig() {
     if (doc["midi_baud"]) config.midi_baud = doc["midi_baud"];
     if (doc["alarm_offset"]) config.alarm_offset_default = doc["alarm_offset"];
     if (doc["port_select"]) config.port_select = doc["port_select"];
+    if (doc.containsKey("time_24h")) config.time_24h = doc["time_24h"];
     if (doc.containsKey("text_wrap")) config.text_wrap = doc["text_wrap"];
     if (doc["ics_poll_min"]) config.ics_poll_min = doc["ics_poll_min"];
 
@@ -92,6 +94,7 @@ void loadConfig() {
     Serial.printf("  midi_baud: %d\n", config.midi_baud);
     Serial.printf("  alarm_offset: %d\n", config.alarm_offset_default);
     Serial.printf("  port_select: %d\n", config.port_select);
+    Serial.printf("  time_24h: %s\n", config.time_24h ? "true" : "false");
     Serial.printf("  text_wrap: %s\n", config.text_wrap ? "true" : "false");
     Serial.printf("  ics_poll_min: %d\n", config.ics_poll_min);
     Serial.printf("  play_duration: %d\n", config.play_duration);
@@ -117,6 +120,7 @@ void saveConfig() {
     doc["midi_baud"] = config.midi_baud;
     doc["alarm_offset"] = config.alarm_offset_default;
     doc["port_select"] = config.port_select;
+    doc["time_24h"] = config.time_24h;
     doc["text_wrap"] = config.text_wrap;
     doc["ics_poll_min"] = config.ics_poll_min;
     doc["play_duration"] = config.play_duration;

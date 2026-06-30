@@ -65,6 +65,7 @@ SD Root/
   "midi_baud": 31250,              // MIDIボーレート
   "alarm_offset": 10,              // デフォルトアラーム（分前）
   "port_select": 1,                // 0=A, 1=B, 2=C
+  "time_24h": true,                // true=24時間制, false=12時間制(A/P表記)
   "text_wrap": false,              // テキスト折り返し
   "ics_poll_min": 5,               // カレンダー更新間隔（分、最小5）
   "play_duration": 0,              // 鳴動時間（秒、0=1曲再生）
@@ -402,7 +403,7 @@ M5PaperSchedAL/
 | イベントバッファ | 4KB/イベント（summary + description 結合） |
 | 取り込み範囲 | 今日0:00〜2週間先（14日）、過去なし (v040) |
 | 繰り返し予定 | RRULE 展開対応（FREQ/INTERVAL/BYDAY/BYMONTHDAY/COUNT/UNTIL/EXDATE） (v040) |
-| 日時表示 | 24時間制（固定） |
+| 日時表示 | 24時間制 / 12時間制（A/P表記付き） |
 | タイムゾーン | JST (UTC+9) 固定 |
 | NTPサーバー | pool.ntp.org, time.google.com |
 | ICS更新間隔 | 1 / 5 / 10 / 15 / 30 / 60分 |
