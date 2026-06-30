@@ -23,5 +23,8 @@ Thumbs.db
 
 # Config files that might contain sensitive data
 config.json
-/
-/
+
+# SDカードのランタイム生成物・アーカイブ（リポジトリ対象外）
+sdcard/cache/
+sdcard/screenshots/
+sdcard/sources/
