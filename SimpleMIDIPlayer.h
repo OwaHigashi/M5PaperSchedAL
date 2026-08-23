@@ -1,7 +1,7 @@
 /*******************************************************************************
  * SimpleMIDIPlayer.h
  * 
- * Standard SD library compatible MIDI file player
+ * MIDI file player reading from LittleFS (internal flash)
  * Supports: Format 0/1, SysEx, all standard MIDI messages
  ******************************************************************************/
 
@@ -9,7 +9,8 @@
 #define SIMPLE_MIDI_PLAYER_H
 
 #include <Arduino.h>
-#include <SD.h>
+#include <FS.h>
+#include <LittleFS.h>
 
 class SimpleMIDIPlayer {
 public:
@@ -109,7 +110,7 @@ inline SimpleMIDIPlayer::~SimpleMIDIPlayer() {
 inline bool SimpleMIDIPlayer::load(const char* filename) {
     close();
     
-    _file = SD.open(filename, FILE_READ);
+    _file = LittleFS.open(filename, FILE_READ);
     if (!_file) {
         Serial.printf("MIDI: Failed to open %s\n", filename);
         return false;

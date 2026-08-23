@@ -1,6 +1,5 @@
 #include "globals.h"
 #include "ui_colors.h"
-#include <SD.h>
 
 void drawSettings(bool fast) {
     Serial.printf("drawSettings() called (cursor=%d, heap=%d)\n", settings_cursor, ESP.getFreeHeap());
@@ -16,18 +15,10 @@ void drawSettings(bool fast) {
     int rowH = 60;
 
     static const char* labels[] = {
-        "SDカードログ機能",
-        "ICS Update", "Debug Fetch", "WiFi SSID", "WiFi Pass",
-        "ICS URL", "ICS User", "ICS Pass",
-        "MIDI File", "MIDI URL", "MIDI Baud", "Port", "Alarm Offset",
-        "Time Format", "Text Display", "ICS Poll", "Play Duration",
-        "Play Repeat", "Notify Topic", "Notify Test",
-        "Sound Test", "Save & Exit"
+        "ホストと再同期", "Server Host", "Server Port", "WiFi SSID", "WiFi Pass",
+        "MIDI File (ローカル既定)", "MIDI Baud", "Port",
+        "Sound Test", "スクリーンショット送信", "Save & Exit"
     };
-
-    static const char* dur_labels[] = {"1曲", "5秒", "10秒", "15秒", "20秒"};
-    static const int dur_values[] = {0, 5, 10, 15, 20};
-    static const int dur_count = 5;
 
     int maxVisible = (890 - y) / rowH;
 
@@ -40,34 +31,20 @@ void drawSettings(bool fast) {
         canvas.setTextSize(26);
         String val;
         switch (i) {
-            case SET_SD_LOG: val = config.sd_log_enabled ? "ON" : "OFF"; break;
-            case SET_ICS_UPDATE: val = "[実行]"; break;
-            case SET_DEBUG_FETCH: val = debug_fetch ? "ON (30s)" : "OFF"; break;
+            case SET_SYNC_NOW: {
+                char b[64];
+                snprintf(b, sizeof(b), "[実行] host:%s rev:%ld/%ld ev:%d", host_online ? "up" : "DOWN", local_rev, host_rev, event_count);
+                val = b; break;
+            }
+            case SET_SERVER_HOST: val = config.server_host; break;
+            case SET_SERVER_PORT: val = String(config.server_port); break;
             case SET_WIFI_SSID: val = config.wifi_ssid; break;
             case SET_WIFI_PASS: val = strlen(config.wifi_pass) > 0 ? "****" : "(empty)"; break;
-            case SET_ICS_URL:   val = config.ics_url; break;
-            case SET_ICS_USER:  val = strlen(config.ics_user) > 0 ? config.ics_user : "(empty)"; break;
-            case SET_ICS_PASS:  val = strlen(config.ics_pass) > 0 ? "****" : "(empty)"; break;
             case SET_MIDI_FILE: val = config.midi_file; break;
-            case SET_MIDI_URL:  val = strlen(config.midi_url) > 0 ? config.midi_url : "(empty)"; break;
             case SET_MIDI_BAUD: val = String(config.midi_baud); break;
             case SET_PORT:      val = port_names[config.port_select]; break;
-            case SET_ALARM_OFFSET: val = String(config.alarm_offset_default) + "分"; break;
-            case SET_TIME_FORMAT: val = config.time_24h ? "24h" : "12h (A/P)"; break;
-            case SET_TEXT_WRAP: val = config.text_wrap ? "折り返し" : "切り詰め"; break;
-            case SET_ICS_POLL: val = String(config.ics_poll_min) + "分"; break;
-            case SET_PLAY_DURATION: {
-                bool found = false;
-                for (int d = 0; d < dur_count; d++) {
-                    if (dur_values[d] == config.play_duration) { val = dur_labels[d]; found = true; break; }
-                }
-                if (!found) val = String(config.play_duration) + "秒";
-                break;
-            }
-            case SET_PLAY_REPEAT: val = String(config.play_repeat) + "回"; break;
-            case SET_NTFY_TOPIC: val = strlen(config.ntfy_topic) > 0 ? config.ntfy_topic : "(empty)"; break;
-            case SET_NTFY_TEST: val = "[実行]"; break;
             case SET_SOUND_TEST: val = "[実行]"; break;
+            case SET_SCREENSHOT: val = "[実行]"; break;
             case SET_SAVE_EXIT:  val = "[実行]"; break;
         }
 
@@ -101,18 +78,24 @@ void drawSettings(bool fast) {
 
 void handleSettingsSelect() {
     switch (settings_cursor) {
-        case SET_SD_LOG:
-            config.sd_log_enabled = !config.sd_log_enabled;
-            saveConfig();   // 診断機能なので即時永続化
-            Serial.printf("SD log: %s\n", config.sd_log_enabled ? "ON" : "OFF");
-            logLine("sdlog %s", config.sd_log_enabled ? "ON" : "OFF");
-            drawSettings(); break;
-        case SET_DEBUG_FETCH:
-            debug_fetch = !debug_fetch;
-            Serial.printf("Debug fetch: %s (interval: %s)\n",
-                          debug_fetch ? "ON" : "OFF",
-                          debug_fetch ? "30s" : "normal");
-            drawSettings(); break;
+        case SET_SYNC_NOW:
+            canvas.fillCanvas(COL_SETTINGS_BG); canvas.setTextColor(COL_SETTINGS_TEXT);
+            canvas.setTextDatum(MC_DATUM); canvas.setTextSize(28);
+            drawTextBold("ホストと同期中...", 270, 280, 1);
+            canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+            if (WiFi.status() != WL_CONNECTED) connectWiFi();
+            sendHeartbeat(true);
+            fetchAndUpdate();
+            ui_state = UI_LIST;
+            scrollToToday(); drawList(); break;
+        case SET_SERVER_HOST:
+            keyboard_target = SET_SERVER_HOST;
+            keyboard_buffer = config.server_host;
+            ui_state = UI_KEYBOARD; drawKeyboard(); break;
+        case SET_SERVER_PORT:
+            keyboard_target = SET_SERVER_PORT;
+            keyboard_buffer = String(config.server_port);
+            ui_state = UI_KEYBOARD; drawKeyboard(); break;
         case SET_WIFI_SSID:
             keyboard_target = SET_WIFI_SSID;
             keyboard_buffer = config.wifi_ssid;
@@ -121,18 +104,6 @@ void handleSettingsSelect() {
             keyboard_target = SET_WIFI_PASS;
             keyboard_buffer = config.wifi_pass;
             ui_state = UI_KEYBOARD; drawKeyboard(); break;
-        case SET_ICS_URL:
-            keyboard_target = SET_ICS_URL;
-            keyboard_buffer = config.ics_url;
-            ui_state = UI_KEYBOARD; drawKeyboard(); break;
-        case SET_ICS_USER:
-            keyboard_target = SET_ICS_USER;
-            keyboard_buffer = config.ics_user;
-            ui_state = UI_KEYBOARD; drawKeyboard(); break;
-        case SET_ICS_PASS:
-            keyboard_target = SET_ICS_PASS;
-            keyboard_buffer = config.ics_pass;
-            ui_state = UI_KEYBOARD; drawKeyboard(); break;
         case SET_MIDI_FILE:
             scanMidiFiles();
             midi_select_cursor = 0;
@@ -140,10 +111,6 @@ void handleSettingsSelect() {
                 if (midi_files[i] == config.midi_file) { midi_select_cursor = i; break; }
             }
             ui_state = UI_MIDI_SELECT; drawMidiSelect(); break;
-        case SET_MIDI_URL:
-            keyboard_target = SET_MIDI_URL;
-            keyboard_buffer = config.midi_url;
-            ui_state = UI_KEYBOARD; drawKeyboard(); break;
         case SET_MIDI_BAUD:
             baud_select_cursor = 0;
             for (int i = 0; i < BAUD_OPTION_COUNT; i++) {
@@ -153,110 +120,15 @@ void handleSettingsSelect() {
         case SET_PORT:
             port_select_cursor = config.port_select;
             ui_state = UI_PORT_SELECT; drawPortSelect(); break;
-        case SET_ALARM_OFFSET:
-            config.alarm_offset_default = (config.alarm_offset_default + 5) % 65;
-            drawSettings(); break;
-        case SET_TIME_FORMAT:
-            config.time_24h = !config.time_24h;
-            drawSettings(); break;
-        case SET_TEXT_WRAP:
-            config.text_wrap = !config.text_wrap;
-            drawSettings(); break;
-        case SET_ICS_POLL: {
-            const int poll_opts[] = {5, 10, 15, 30, 60};
-            int cur = 0;
-            for (int j = 0; j < 5; j++) { if (poll_opts[j] == config.ics_poll_min) { cur = j; break; } }
-            cur = (cur + 1) % 5;
-            config.ics_poll_min = poll_opts[cur];
-            drawSettings(); break;
-        }
-        case SET_PLAY_DURATION: {
-            const int dur_opts[] = {0, 5, 10, 15, 20};
-            int cur = 0;
-            for (int j = 0; j < 5; j++) { if (dur_opts[j] == config.play_duration) { cur = j; break; } }
-            cur = (cur + 1) % 5;
-            config.play_duration = dur_opts[cur];
-            drawSettings(); break;
-        }
-        case SET_PLAY_REPEAT:
-            config.play_repeat = (config.play_repeat % 5) + 1;
-            drawSettings(); break;
-        case SET_NTFY_TOPIC:
-            keyboard_target = SET_NTFY_TOPIC;
-            keyboard_buffer = config.ntfy_topic;
-            ui_state = UI_KEYBOARD; drawKeyboard(); break;
-        case SET_NTFY_TEST: {
-            Serial.println("\n*** NOTIFY TEST ***");
-            canvas.fillCanvas(COL_SETTINGS_BG); canvas.setTextColor(COL_SETTINGS_TEXT);
-            canvas.setTextDatum(MC_DATUM); canvas.setTextSize(28);
-            if (strlen(config.ntfy_topic) == 0) {
-                canvas.drawString("通知テスト失敗", 270, 400);
-                canvas.setTextSize(22);
-                canvas.drawString("Notify Topicが未設定です", 270, 450);
-                canvas.pushCanvas(0, 0, UPDATE_MODE_GC16); delay(2000);
-            } else if (WiFi.status() != WL_CONNECTED) {
-                canvas.drawString("通知テスト失敗", 270, 400);
-                canvas.setTextSize(22);
-                canvas.drawString("WiFi未接続です", 270, 450);
-                canvas.pushCanvas(0, 0, UPDATE_MODE_GC16); delay(2000);
-            } else {
-                canvas.drawString("通知送信中...", 270, 400);
-                canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
-                sendNtfyNotification("M5Paper Test", "通知テスト - This is a test notification");
-                canvas.fillCanvas(COL_SETTINGS_BG); canvas.setTextColor(COL_SETTINGS_TEXT);
-                canvas.setTextDatum(MC_DATUM); canvas.setTextSize(28);
-                canvas.drawString("通知送信完了", 270, 400);
-                canvas.setTextSize(22);
-                canvas.drawString(config.ntfy_topic, 270, 450);
-                canvas.pushCanvas(0, 0, UPDATE_MODE_GC16); delay(2000);
-            }
-            drawSettings(); break;
-        }
-        case SET_ICS_UPDATE:
-            canvas.fillCanvas(COL_SETTINGS_BG); canvas.setTextColor(COL_SETTINGS_TEXT);
-            canvas.setTextDatum(MC_DATUM); canvas.setTextSize(28);
-            drawTextBold("ICS取得中...", 270, 280, 1);
-            canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
-            if (WiFi.status() != WL_CONNECTED) connectWiFi();
-            fetchAndUpdate();
-            ui_state = UI_LIST;
-            scrollToToday(); drawList(); break;
+        case SET_SCREENSHOT:
+            drawSettings();
+            saveScreenshot();
+            break;
         case SET_SOUND_TEST: {
-            Serial.println("\n*** SOUND TEST ***");
-            Serial.printf("  MIDI: %s\n", config.midi_file);
-            waitEPDReady();
-            Serial.printf("  Exists: %s\n", SD.exists(config.midi_file) ? "YES" : "NO");
-            Serial.printf("  Heap: %d\n", ESP.getFreeHeap());
-            if (!SD.exists(config.midi_file)) {
-                canvas.fillCanvas(COL_SETTINGS_BG); canvas.setTextColor(COL_SETTINGS_TEXT);
-                canvas.setTextDatum(MC_DATUM); canvas.setTextSize(28);
-                canvas.drawString("MIDI再生失敗", 270, 400);
-                canvas.setTextSize(22);
-                canvas.drawString(config.midi_file, 270, 450);
-                canvas.drawString("ファイルを確認してください", 270, 490);
-                canvas.pushCanvas(0, 0, UPDATE_MODE_GC16); delay(3000);
-                drawSettings(); break;
-            }
-            int dur = config.play_duration;
-            play_duration_ms = dur * 1000;
-            int rep = config.play_repeat;
-            if (rep < 1) rep = 1;
-            play_repeat_remaining = rep;
-            play_start_ms = millis();
-            playing_event = -1;
-            playing_alarm_idx = -1;
-            if (startMidiPlayback(config.midi_file)) {
-                ui_state = UI_PLAYING;
-                canvas.fillCanvas(COL_SETTINGS_BG); canvas.setTextColor(COL_SETTINGS_TEXT);
-                canvas.setTextDatum(MC_DATUM);
-                canvas.setTextSize(48); canvas.drawString("SOUND TEST", 270, 200);
-                canvas.setTextSize(24); canvas.drawString(config.midi_file, 270, 300);
-                String info = dur > 0 ? String(dur) + "秒" : "1曲";
-                info += " x" + String(rep) + "回";
-                canvas.drawString(info, 270, 350);
-                canvas.setTextSize(28); canvas.drawString("タップで停止", 270, 450);
-                canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
-            } else {
+            Serial.printf("\n*** SOUND TEST *** %s\n", config.midi_file);
+            const char* name = strrchr(config.midi_file, '/');
+            name = name ? name + 1 : config.midi_file;
+            if (!startCommandPlay(name, false, config.play_duration, config.play_repeat, "", "")) {
                 canvas.fillCanvas(COL_SETTINGS_BG); canvas.setTextColor(COL_SETTINGS_TEXT);
                 canvas.setTextDatum(MC_DATUM); canvas.setTextSize(28);
                 canvas.drawString("MIDI再生失敗", 270, 400);

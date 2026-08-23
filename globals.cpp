@@ -21,15 +21,12 @@ ButtonArea btn_prev, btn_next, btn_today, btn_detail;
 int settings_cursor = 0;
 
 int playing_event = -1;
-int playing_alarm_idx = -1;     // 発火中アラームのslot index
+int playing_alarm_idx = -1;
+char playing_alarm_id[40] = "";
 int play_repeat_remaining = 0;
-
-// 起動後に1回でも fetch が完走したか
-//   false: 初回fetch → 過去の!付き予定を一斉発火させないため従来の10分グレース
-//   true : 通常fetch → 後付け!でも開始翌日になるまで鳴らす
-bool initial_fetch_done = false;
 unsigned long play_start_ms = 0;
 int play_duration_ms = 0;
+char play_file_override[96] = "";
 
 String keyboard_buffer;
 int keyboard_target = -1;
@@ -54,9 +51,15 @@ int date_header_y1[10];
 int date_header_count = 0;
 
 time_t last_fetch = 0;
-int fetch_fail_count = 0;
-unsigned long fetch_fail_since_ms = 0;
-bool debug_fetch = false;
+int sync_fail_count = 0;
+unsigned long host_lost_since_ms = 0;
+bool host_online = false;
+long host_rev = -1;
+long local_rev = -1;
+int src_fail_mask = 0;
+unsigned long hb_interval_ms = HB_INTERVAL_MS_DEFAULT;
+int full_sync_sec = FULL_SYNC_SEC_DEFAULT;
+time_t host_next_alarm = 0;
 bool reboot_pending = false;
 DisplayRow last_pushed[MAX_DISPLAY_ROWS];
 int last_pushed_count = 0;
@@ -66,24 +69,19 @@ unsigned long last_interaction_ms = 0;
 time_t last_alarm_debug = 0;
 time_t last_auto_refresh = 0;
 time_t last_gc16_cleanup = 0;
-unsigned long last_sd_check_ms = 0;
+bool time_valid = false;
 
 SimpleMIDIPlayer midi;
 bool midi_playing = false;
 
-bool sd_healthy = true;
+bool fs_ok = false;
 
 M5EPD_Canvas heartbeat_canvas(&M5.EPD);
 bool heartbeat_visible = false;
 unsigned long last_heartbeat_ms = 0;
 
 int displayed_next_event_idx = -1;
-
 int partial_refresh_count = 0;
-int heap_skip_count = 0;
-
-int fetch_url_count = 0;
-uint8_t fetch_url_status[MAX_FETCH_URLS] = {0};
 
 bool sw_l_prev = true;
 bool sw_r_prev = true;

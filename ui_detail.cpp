@@ -272,3 +272,23 @@ void drawPlaying(int idx) {
 
     canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
 }
+
+//==============================================================================
+// 汎用再生画面 (サウンドテスト / ホストからの play コマンド)
+//==============================================================================
+void drawPlayingGeneric(const char* title, const char* sub) {
+    canvas.fillCanvas(COL_DETAIL_BG);
+    canvas.setTextColor(COL_DETAIL_TEXT);
+    canvas.setTextDatum(MC_DATUM);
+    canvas.setTextSize(52);
+    drawTextBold(title, 270, 200, 3);
+    canvas.setTextSize(24);
+    drawTextBold(sub, 270, 300, 1);
+    String info = play_duration_ms > 0 ? String(play_duration_ms / 1000) + "秒" : "1曲";
+    info += " x" + String(play_repeat_remaining) + "回";
+    canvas.setTextSize(28);
+    drawTextBold(info, 270, 350, 2);
+    drawTextBold("タップで停止", 270, 450, 2);
+    canvas.setTextDatum(TL_DATUM);
+    canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+}

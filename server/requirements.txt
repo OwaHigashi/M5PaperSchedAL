@@ -1,0 +1,5 @@
+icalendar>=6
+python-dateutil
+recurring-ical-events>=3
+requests
+pillow

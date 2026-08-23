@@ -1,142 +1,72 @@
 #include "globals.h"
-#include <SD.h>
 #include <ArduinoJson.h>
 
+// 端末ローカル設定は LittleFS の /config.json。
+// 予定・アラーム・ntfy・ICS などの設定はすべてホスト (server/config.json) 側にある。
+
 void loadConfig() {
-    waitEPDReady();
-    // デフォルト値（初回起動用）
     strcpy(config.wifi_ssid, "your_wifi_ssid");
     strcpy(config.wifi_pass, "your_wifi_password");
-    strcpy(config.ics_url, "https://example.com/calendar.ics");
-    strcpy(config.ics_user, "");
-    strcpy(config.ics_pass, "");
+    strcpy(config.server_host, DEFAULT_SERVER_HOST);
+    config.server_port = DEFAULT_SERVER_PORT;
+    config.api_token[0] = '\0';
     strcpy(config.midi_file, "/midi/alarm.mid");
-    strcpy(config.midi_url, "");
-    strcpy(config.ntfy_topic, "");
     config.midi_baud = DEFAULT_MIDI_BAUD;
-    config.alarm_offset_default = DEFAULT_ALARM_OFFSET;
-    config.port_select = 1;    // デフォルトPort B
+    config.port_select = 1;
+    // ホストから上書きされる表示設定の初期値
     config.time_24h = true;
     config.text_wrap = false;
-    config.ics_poll_min = 30;
-    config.play_duration = 0;  // 0=1曲
+    config.play_duration = 0;
     config.play_repeat = 1;
-    config.max_events = 299;
-    config.max_desc_bytes = 3500;
-    config.min_free_heap = 40;
-    config.sd_log_enabled = false;  // 既定OFF: SDカード劣化を避けるため。診断時のみ設定メニューでON
+    config.alarm_offset_default = 10;
+    strcpy(config.midi_default, "alarm.mid");
+    strcpy(config.tz, TZ_DEFAULT);
 
-    if (!SD.exists(CONFIG_FILE)) {
+    if (!fs_ok || !LittleFS.exists(CONFIG_FILE)) {
         Serial.println("Config not found, using defaults");
         return;
     }
-
-    File f = SD.open(CONFIG_FILE, FILE_READ);
+    File f = LittleFS.open(CONFIG_FILE, FILE_READ);
     if (!f) return;
-
-    StaticJsonDocument<1280> doc;
+    StaticJsonDocument<1024> doc;
     DeserializationError err = deserializeJson(doc, f);
     f.close();
+    if (err) { Serial.printf("Config JSON error: %s\n", err.c_str()); return; }
 
-    if (err) {
-        Serial.println("JSON parse error");
-        return;
-    }
+    if (doc["wifi_ssid"])   strlcpy(config.wifi_ssid, doc["wifi_ssid"], sizeof(config.wifi_ssid));
+    if (doc["wifi_pass"])   strlcpy(config.wifi_pass, doc["wifi_pass"], sizeof(config.wifi_pass));
+    if (doc["server_host"]) strlcpy(config.server_host, doc["server_host"], sizeof(config.server_host));
+    if (doc["server_port"]) config.server_port = doc["server_port"];
+    if (doc["api_token"])   strlcpy(config.api_token, doc["api_token"], sizeof(config.api_token));
+    if (doc["midi_file"])   strlcpy(config.midi_file, doc["midi_file"], sizeof(config.midi_file));
+    if (doc["midi_baud"])   config.midi_baud = doc["midi_baud"];
+    if (doc.containsKey("port_select")) config.port_select = doc["port_select"];
+    if (config.port_select < 0 || config.port_select >= PORT_COUNT) config.port_select = 1;
+    if (config.server_port <= 0 || config.server_port > 65535) config.server_port = DEFAULT_SERVER_PORT;
 
-    if (doc["wifi_ssid"]) strlcpy(config.wifi_ssid, doc["wifi_ssid"], sizeof(config.wifi_ssid));
-    if (doc["wifi_pass"]) strlcpy(config.wifi_pass, doc["wifi_pass"], sizeof(config.wifi_pass));
-    if (doc["ics_url"])   strlcpy(config.ics_url, doc["ics_url"], sizeof(config.ics_url));
-    if (doc["ics_user"])  strlcpy(config.ics_user, doc["ics_user"], sizeof(config.ics_user));
-    if (doc["ics_pass"])  strlcpy(config.ics_pass, doc["ics_pass"], sizeof(config.ics_pass));
-    if (doc["midi_file"]) strlcpy(config.midi_file, doc["midi_file"], sizeof(config.midi_file));
-    if (doc["midi_url"])  strlcpy(config.midi_url, doc["midi_url"], sizeof(config.midi_url));
-    if (doc["ntfy_topic"]) strlcpy(config.ntfy_topic, doc["ntfy_topic"], sizeof(config.ntfy_topic));
-    if (doc["midi_baud"]) config.midi_baud = doc["midi_baud"];
-    if (doc["alarm_offset"]) config.alarm_offset_default = doc["alarm_offset"];
-    if (doc["port_select"]) config.port_select = doc["port_select"];
-    if (doc.containsKey("time_24h")) config.time_24h = doc["time_24h"];
-    if (doc.containsKey("text_wrap")) config.text_wrap = doc["text_wrap"];
-    if (doc["ics_poll_min"]) config.ics_poll_min = doc["ics_poll_min"];
-
-    if (config.ics_poll_min < 5) {
-        Serial.printf("Config: ics_poll_min=%d is too small, setting to 5\n", config.ics_poll_min);
-        config.ics_poll_min = 5;
-    }
-    if (doc.containsKey("play_duration")) config.play_duration = doc["play_duration"];
-    if (doc["play_repeat"]) config.play_repeat = doc["play_repeat"];
-    if (doc["max_events"]) config.max_events = doc["max_events"];
-    if (doc["max_desc_bytes"]) config.max_desc_bytes = doc["max_desc_bytes"];
-    if (doc["min_free_heap"]) config.min_free_heap = doc["min_free_heap"];
-    if (doc.containsKey("sd_log_enabled")) config.sd_log_enabled = doc["sd_log_enabled"];
-
-    // === 診断ビルド(v047): SDログを強制ON ===
-    //   config.json の保存値に関わらず常に有効化する。誤発火(予定なし鳴動)/二重下線の
-    //   再現データをSDへ確実に残すため。原因特定後はこの1行を削除し既定OFFへ戻すこと。
-    config.sd_log_enabled = true;
-
-    if (config.max_events < 10) config.max_events = 10;
-    if (config.max_events > MAX_EVENTS - 1) config.max_events = MAX_EVENTS - 1;
-    if (config.max_desc_bytes < 100) config.max_desc_bytes = 100;
-    if (config.min_free_heap < 20) config.min_free_heap = 20;
-
-    Serial.println("Config loaded");
-
-    // デバッグ用: 読み込んだ設定をシリアルに表示
-    Serial.println("=== CONFIG DUMP ===");
+    Serial.println("=== CONFIG ===");
     Serial.printf("  wifi_ssid: %s\n", config.wifi_ssid);
-    Serial.printf("  wifi_pass: %s\n", strlen(config.wifi_pass) > 0 ? "(set)" : "(empty)");
-    Serial.printf("  ics_url: %s\n", config.ics_url);
-    Serial.printf("  ics_user: %s\n", config.ics_user);
-    Serial.printf("  ics_pass: %s\n", strlen(config.ics_pass) > 0 ? "(set)" : "(empty)");
-    Serial.printf("  midi_file: %s\n", config.midi_file);
-    Serial.printf("  midi_url: %s\n", config.midi_url);
-    Serial.printf("  ntfy_topic: %s\n", config.ntfy_topic);
-    Serial.printf("  midi_baud: %d\n", config.midi_baud);
-    Serial.printf("  alarm_offset: %d\n", config.alarm_offset_default);
-    Serial.printf("  port_select: %d\n", config.port_select);
-    Serial.printf("  time_24h: %s\n", config.time_24h ? "true" : "false");
-    Serial.printf("  text_wrap: %s\n", config.text_wrap ? "true" : "false");
-    Serial.printf("  ics_poll_min: %d\n", config.ics_poll_min);
-    Serial.printf("  play_duration: %d\n", config.play_duration);
-    Serial.printf("  play_repeat: %d\n", config.play_repeat);
-    Serial.printf("  max_events: %d\n", config.max_events);
-    Serial.printf("  max_desc_bytes: %d\n", config.max_desc_bytes);
-    Serial.printf("  min_free_heap: %d\n", config.min_free_heap);
-    Serial.printf("  sd_log_enabled: %s\n", config.sd_log_enabled ? "true" : "false");
-    Serial.println("=== END CONFIG ===");
+    Serial.printf("  server: %s:%d token:%s\n", config.server_host, config.server_port,
+                  strlen(config.api_token) ? "(set)" : "(none)");
+    Serial.printf("  midi_file: %s baud:%u port:%d\n", config.midi_file, config.midi_baud, config.port_select);
 }
 
 void saveConfig() {
-    waitEPDReady();
-    StaticJsonDocument<1280> doc;
+    if (!fs_ok) { Serial.println("FS not ready, config not saved"); return; }
+    StaticJsonDocument<1024> doc;
     doc["wifi_ssid"] = config.wifi_ssid;
     doc["wifi_pass"] = config.wifi_pass;
-    doc["ics_url"] = config.ics_url;
-    doc["ics_user"] = config.ics_user;
-    doc["ics_pass"] = config.ics_pass;
+    doc["server_host"] = config.server_host;
+    doc["server_port"] = config.server_port;
+    doc["api_token"] = config.api_token;
     doc["midi_file"] = config.midi_file;
-    doc["midi_url"] = config.midi_url;
-    doc["ntfy_topic"] = config.ntfy_topic;
     doc["midi_baud"] = config.midi_baud;
-    doc["alarm_offset"] = config.alarm_offset_default;
     doc["port_select"] = config.port_select;
-    doc["time_24h"] = config.time_24h;
-    doc["text_wrap"] = config.text_wrap;
-    doc["ics_poll_min"] = config.ics_poll_min;
-    doc["play_duration"] = config.play_duration;
-    doc["play_repeat"] = config.play_repeat;
-    doc["max_events"] = config.max_events;
-    doc["max_desc_bytes"] = config.max_desc_bytes;
-    doc["min_free_heap"] = config.min_free_heap;
-    doc["sd_log_enabled"] = config.sd_log_enabled;
-
-    File f = SD.open(CONFIG_FILE, FILE_WRITE);
-    if (!f) {
-        Serial.println("Failed to save config");
-        return;
-    }
-    serializeJson(doc, f);
-    f.flush();
+    waitEPDReady();
+    File f = LittleFS.open(CONFIG_FILE, FILE_WRITE);
+    if (!f) { Serial.println("Failed to save config"); return; }
+    serializeJsonPretty(doc, f);
     f.close();
     Serial.println("Config saved");
+    logLine("config saved server=%s:%d", config.server_host, config.server_port);
 }

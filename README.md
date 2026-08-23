@@ -1,456 +1,249 @@
-# M5Paper ICS Alarm with Unit Synth (v049)
+# M5Paper Schedule Display (v100 — thin client + host server)
 
-M5Paper v1.1 用のカレンダーアラームアプリケーション。
-ICSカレンダーから予定を取得し、`!` マーカー付き予定を指定時刻にUnit Synth経由でMIDI再生します。
+M5Paper v1.1 をカレンダー表示・アラーム鳴動端末として使うシステムです。
+v051 までは M5Paper 単体で ICS 取得(HTTPS)・RRULE 展開・アラーム管理をすべて行っていましたが、
+ESP32 での 24 時間 SSL 運用はヒープ断片化・SSL バッファ・WiFi スタックの不安定さにより
+「落ちる／時刻がずれる／予定が出ない／鳴らない」を根本的に解決できませんでした。
 
-## 機能
+v100 では役割を分離しました。
 
-- **ICSカレンダー取得**: HTTPS対応、Basic認証、ストリーミングパーサー、自動更新、キャッシュバイパス
-- **繰り返し予定(RRULE)の展開** (v040): 毎日/毎週/毎月/毎年の定期予定を**取り込みウィンドウ内で各回に展開**。`INTERVAL` / `BYDAY`(序数付) / `BYMONTHDAY` / `COUNT` / `UNTIL` / `EXDATE` に対応
-- **取り込みウィンドウ** (v040): **今日0:00〜2週間先**のみを取り込み（過去は表示しない）。負荷を抑え、定期予定を漏れなく表示
-- **アラームマーカー `!`**: タイトルまたは説明文に `!` を含む予定がアラーム対象。時刻・MIDI・鳴動時間・繰り返しを柔軟に指定可能
-- **MIDI再生**: Unit Synth (SAM2695) 経由、SysEx完全対応、終了時GM Reset
-- **タッチ＆スイッチUI**: E-Ink画面でイベント一覧・詳細表示・スクロール、ヘッダーに最終更新時刻表示。選択行は**下線(アンダースコア)**、次に来る予定は **▶マーク**で表示 (v049)
-- **次の予定の可視化** (v049): 次に到来する予定の行に太字 **▶** を表示（♪=アラーム有り、▶=次の予定の2列構成）。フッターに次アラームを**日付付き**（`次AL 6/18 22:50`）で表示
-- **ntfy通知**: アラーム発火時にスマートフォンへプッシュ通知
-- **PSRAM活用**: イベントデータをPSRAM上に配置し、DRAMの断片化を完全排除
-- **自動復旧**: ヒープ逼迫を**次フェッチ直前**に検出してサイレント再起動で回収（描画済みデータは画面に維持）
+| | 担当 |
+|---|---|
+| **Ubuntu ホスト** (`server/`) | ICS 取得 (HTTPS)・RRULE/RECURRENCE-ID/EXDATE 展開・`!` マーカー解釈・アラーム時刻と「鳴動済み」状態の管理・ntfy 通知・MIDI ファイル取得・端末の監視 (Active Sensing)・Web ダッシュボード |
+| **M5Paper** (本リポジトリのファーム) | 画面表示・鳴動・タッチ/スイッチ操作の報告 **だけ**。SSL なし、SD カードなし |
 
-## ハードウェア
+端末とホストは LAN 内の **素の HTTP/1.1 (REST, JSON)** で通信します。端末側は `WiFiClient` を直接使う数百行の
+クライアントだけで、`HTTPClient`/`WiFiClientSecure`/mbedTLS は一切リンクされません (Flash 1.08MB)。
 
-| 部品 | 説明 |
-|------|------|
-| M5Paper v1.1 | ESP32 + 4.7" E-Ink + 8MB PSRAM |
-| M5Stack Unit Synth (SAM2695) | MIDI音源 |
-| Grove ケーブル | Port A/B/C いずれかに接続 |
-| microSD カード | 設定・フォント・MIDIファイル格納 |
-
-### ポート接続
-
-| ポート | TX GPIO | 用途 |
-|--------|---------|------|
-| Port A | GPIO 25 | |
-| Port B | GPIO 26 | デフォルト |
-| Port C | GPIO 18 | |
-
-## SDカードの準備
+## 構成
 
 ```
-SD Root/
-├── config.json          設定ファイル
-├── fonts/
-│   └── ipaexg.ttf       IPAexゴシック（必須）
-├── midi/
-│   └── alarm.mid        デフォルトアラーム音
-└── midi-dl/             MIDI URL自動ダウンロード先（自動作成）
-└── screenshots/         スクリーンショット保存先（自動作成）
+┌──────────── Ubuntu host (server/) ───────────────┐        ┌──── M5Paper ────┐
+│ ICS(HTTPS) ──▶ parse/expand ──▶ events table(rev) │◀──GET──│ /api/v1/events   │ 全件同期 (NDJSON)
+│ alarm state (data/state.json)   ntfy  MIDI cache │◀──POST─│ /api/v1/heartbeat│ 5秒毎: 生存・時刻・rev・コマンド
+│ device supervision  dashboard  logs  screenshots │◀──POST─│ /api/v1/alarm/ack│ 鳴動完了
+│ http://host:8765/                                 │        │ LittleFS: font/midi/config │
+└───────────────────────────────────────────────────┘        └──────────────────┘
 ```
 
-### フォント
+### 改善点 (v051 → v100)
 
-[IPAexゴシック](https://moji.or.jp/ipafont/) から `ipaexg.ttf` をダウンロードし `/fonts/` に配置。
+| 症状 | 原因 (v051) | v100 |
+|---|---|---|
+| 落ちる・再起動ループ | SSL ハンドシェイクの 32KB 連続ブロック確保失敗、ヒープ断片化 | 端末から SSL を完全排除。ヒープ逼迫由来の再起動ロジックも撤廃 |
+| 時刻がずれる | NTP 同期失敗・RTC ドリフト | 毎ハートビート (5秒) でホスト時刻と比較し、ずれが `max_skew_sec` (既定 2 秒) を超えたら即補正 |
+| 予定が表示されない／更新されない | フェッチ失敗 → 全 X → 15 分再起動待ち | ホストが 1 分毎に取得。失敗時は直前の成功コピーを使い続ける。端末はテーブル版 (`rev`) が変わった時だけ全件取得 |
+| 正しい時刻に鳴動しない・すっぽ抜け | 再フェッチで triggered 状態が消える／再武装される | 「鳴動済み」はホストが永続化 (state.json)。端末は鳴動完了を ACK し、届かなければ LittleFS に保持して再送。ホストは未 ACK を検知して play コマンドを再送、それでも駄目なら ntfy で「鳴動失敗」を通知 |
+| 取り込み期間・件数の妥協 | 2 週間・max_events 99・desc 500B | 過去 1 日〜先 60 日 (設定可)、299 件、desc 3500B。ホスト側で 1.3MB の ICS も問題なし |
+| SD カード劣化・SPI 競合 | SD と EPD が SPI を共有 | SD 廃止。フォント/設定/MIDI は内蔵フラッシュ (LittleFS 12.9MB) |
 
-## config.json
+### 端末を信用しない設計 (Active Sensing)
 
-```jsonc
+端末は 5 秒毎に `/api/v1/heartbeat` で自己申告します (FW 版・uptime・heap・電池・RSSI・画面状態・テーブル版・
+鳴動中アラーム・未送 ACK 数・温度・操作イベント・ログ)。ホストは次を検証・記録します。
+
+- 60 秒途絶 → **offline** (ntfy 通知、復帰時も通知)
+- uptime が巻き戻った → **再起動検知** (reset 理由付きで通知)
+- 時刻ずれ・ハートビート seq の欠落・想定外 FW・不明アラームの ACK → 異常として記録
+- 鳴動時刻を過ぎて 25 秒 ACK がない → `play` コマンドを明示送信 (最大 3 回)。180 秒で「鳴動失敗」確定 + ntfy
+- ホストは鳴動時刻になった時点で端末と無関係に ntfy を送る (端末が死んでいても予定は消えない)
+
+端末 → ホストの **操作イベント** (タッチ座標・スイッチ・詳細表示した予定 ID・アラーム発火) はハートビートに同梱され、
+ダッシュボードで見られます。ホスト → 端末の **コマンド** はハートビート応答で配られ、端末は ACK を返します。
+
+| コマンド | 動作 |
+|---|---|
+| `refresh` | 全件再同期して再描画 |
+| `redraw` | 再描画 (GC16) |
+| `screenshot` | フレームバッファをホストへ送信 → `data/screenshots/*.png` |
+| `play` `{midi,duration,repeat,alarm_id?}` | 鳴動 (サウンドテスト／アラーム再送) |
+| `stop` | 鳴動停止 |
+| `message` `{text,hold_ms}` | 画面にメッセージ表示 |
+| `show` `{event_id}` | 指定予定の詳細を表示 |
+| `reboot` | 再起動 |
+| `config` `{time_24h,text_wrap}` | 表示設定変更 |
+
+## ホスト側セットアップ (Ubuntu)
+
+```bash
+cd server
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+cp config.json.example config.json   # ICS URL / ntfy などを記入
+.venv/bin/python -m m5sched config.json        # 手動起動 (http://localhost:8765/)
+```
+
+systemd (このホストでは導入済み):
+
+```bash
+sudo cp server/m5sched.service /etc/systemd/system/
+sudo systemctl enable --now m5sched
+sudo ufw allow from 10.1.0.0/16 to any port 8765 proto tcp   # LAN のみ許可
+journalctl -u m5sched -f
+```
+
+### server/config.json
+
+| キー | 既定 | 説明 |
+|---|---|---|
+| `ics_urls` | `[]` | `{"url","user","pass"}` の配列。`file://` も可 (テスト用) |
+| `ics_poll_sec` | 60 | ICS 取得間隔 |
+| `window_past_days` / `window_future_days` | 1 / 60 | 取り込み範囲 |
+| `max_events` / `max_desc_bytes` | 299 / 3500 | 端末テーブルに収める上限 |
+| `alarm_offset_default` `play_duration` `play_repeat` `midi_default` `midi_url` | | 旧 config.json と同じ意味 (ホスト側に移動) |
+| `ntfy_server` `ntfy_topic` `ntfy_on_*` | | 通知 |
+| `device.heartbeat_sec` | 5 | Active Sensing 間隔 (端末へ配布) |
+| `device.offline_after_sec` | 60 | オフライン判定 |
+| `device.full_sync_sec` | 600 | rev が同じでも最低この間隔で全件再取得 |
+| `device.time_24h` `device.text_wrap` | | 端末の表示設定 (ホストから配布) |
+| `device.max_skew_sec` | 2 | 端末がこの秒数以上ずれたら時刻補正 |
+| `ca_file` / `ics_verify_tls` | | 証明書チェーンが不完全なサーバ用 (例: `certs/ca-bundle.pem`) |
+| `api_token` | "" | 設定すると端末は `X-Token` ヘッダを要求される |
+
+### データ
+
+```
+server/data/state.json          アラーム「鳴動済み」状態 (永続)
+server/data/events_cache.json   最後のテーブル (再起動・ICS 障害時もこれで動く)
+server/data/log/alarm.log       due / ACK / MISSED / 端末 online-offline
+server/data/log/device.log      端末から転送されたログ (旧 SD ログの代替)
+server/data/screenshots/        端末スクリーンショット (PNG)
+server/cache/ics/, cache/midi/  ICS 直近成功コピー、MIDI キャッシュ
+```
+
+### ダッシュボード `http://<host>:8765/`
+
+端末状態 (online/offline, 時刻ずれ, heap, 電池, RSSI, 再起動回数, 異常検知)、ICS 取得状況、予定一覧と
+アラーム状態、コマンド送信 (再同期・再描画・スクリーンショット・サウンドテスト・停止・再起動・メッセージ)。
+
+### REST API
+
+| | |
+|---|---|
+| `GET /api/v1/events` | NDJSON: 1 行目 header (`rev,now,tz,count,表示設定`), 以降 1 イベント 1 行, 末尾 `{"type":"end"}` |
+| `POST /api/v1/heartbeat` | 端末状態 → `{now,tz,rev,hb_sec,full_sync_sec,max_skew,cmds[],next_alarm}` |
+| `POST /api/v1/alarm/ack` | `{alarm_id,result}` |
+| `POST /api/v1/cmd/ack` | `{id,ok,info}` |
+| `GET /api/v1/midi/<name>` | MIDI バイト列 (なければ `midi_url` から取得してキャッシュ) |
+| `POST /api/v1/screenshot` | 4bpp フレームバッファ (ヘッダ `X-Width`/`X-Height`) |
+| `GET /api/v1/status` `GET /api/v1/list` `POST /api/v1/cmd` `POST /api/v1/refresh` | ダッシュボード用 |
+
+アラーム ID は `"<event_id>-<+offset>"` (例 `4ecf6462d6e4-+10`)。event_id は UID と開始時刻から作る安定ハッシュです。
+
+## 端末側セットアップ (PlatformIO, Linux)
+
+このホストには導入済み (`~/.platformio-venv`, `/usr/local/bin/pio`, udev ルール `/dev/m5paper`)。
+
+```bash
+pio run                 # ビルド
+pio run -t upload       # ファーム書込 (/dev/m5paper)
+pio run -t uploadfs     # LittleFS 書込 (data/ → フォント・MIDI・config)
+pio device monitor      # シリアル (115200)
+```
+
+### 内蔵フラッシュ (LittleFS) の内容 — `data/`
+
+```
+data/
+├── config.json          端末ローカル設定 (WiFi, サーバ host/port, MIDI ポート) ※git 管理外
+├── config.json.example
+├── fonts/ipaexg.ttf     IPAex ゴシック ※git 管理外 (6MB)。sdcard/fonts からコピー
+└── midi/alarm.mid       ローカル既定 MIDI
+```
+
+パーティション (`partitions_m5paper.csv`): app 3MB + LittleFS 12.9MB。
+`data/` を変更したら `pio run -t uploadfs`。実行時生成物: `/midi-dl/` (ホストから取得した MIDI), `/pending_acks.txt`。
+
+### data/config.json
+
+```json
 {
-  "wifi_ssid": "your_ssid",        // WiFi SSID（2.4GHz）
-  "wifi_pass": "your_password",     // WiFi パスワード
-  "ics_url": "https://...",         // ICSカレンダーURL
-  "ics_user": "",                   // Basic認証ユーザー（不要なら空）
-  "ics_pass": "",                   // Basic認証パスワード（不要なら空）
-  "ntfy_topic": "",                 // ntfy トピック名（空=通知無効）
-  "midi_file": "/midi/alarm.mid",  // デフォルトMIDIファイル
-  "midi_url": "",                   // MIDI DLのベースURL
-  "midi_baud": 31250,              // MIDIボーレート
-  "alarm_offset": 10,              // デフォルトアラーム（分前）
-  "port_select": 1,                // 0=A, 1=B, 2=C
-  "time_24h": true,                // true=24時間制, false=12時間制(A/P表記)
-  "text_wrap": false,              // テキスト折り返し
-  "ics_poll_min": 5,               // カレンダー更新間隔（分、最小5）
-  "play_duration": 0,              // 鳴動時間（秒、0=1曲再生）
-  "play_repeat": 1,                // 繰り返し回数
-  "max_events": 299,               // 最大イベント読み込み数（上限299）
-  "max_desc_bytes": 3500,          // 説明文最大バイト数
-  "min_free_heap": 40              // 最低空きヒープ（KB）
+  "wifi_ssid": "...", "wifi_pass": "...",
+  "server_host": "10.1.1.2", "server_port": 8765, "api_token": "",
+  "midi_file": "/midi/alarm.mid", "midi_baud": 31250, "port_select": 1
 }
 ```
 
-### パラメータ詳細
+`server_host` 未設定時は `platformio.ini` の `DEFAULT_SERVER_HOST` が使われます。設定メニュー (P ボタン) からも変更できます。
 
-| パラメータ | デフォルト | 範囲 | 説明 |
-|-----------|-----------|------|------|
-| ics_poll_min | 5 | 5〜60 | 5未満は自動的に5に補正 |
-| max_events | 299 | 10〜299 | MAX_EVENTS(300)-1が上限 |
-| max_desc_bytes | 3500 | 100〜 | text[4000]の中にsummaryも含むため3500推奨 |
-| min_free_heap | 40 | 20〜 | ICSフェッチ時のDRAM空き下限 |
+### シリアルコマンド
 
-## アラームマーカー
+`STATUS` / `SYNC` / `HB` / `REBOOT` (改行終端)。
 
-### 基本ルール
+## アラームマーカー `!` (仕様は v051 と同じ。判定はホスト側)
 
-予定の **タイトル（SUMMARY）** または **説明文（DESCRIPTION）** のどこかに `!` を含めるとアラーム対象になります。タイトル・説明文の区別なく、同じルールで検出されます。
+タイトルまたは説明文に `!` を含めるとアラーム対象。
 
-#### 単独 `!`（簡易指定）
+| 記法 | 意味 |
+|---|---|
+| `会議!` / `!朝礼` | 既定オフセット (10 分前) |
+| `!-10!` `!+5!` `!-0!` | 10 分前 / 5 分後 / 定刻 |
+| `!-25,-15,-5!` | 複数 (最大 6) |
+| `>song.mid` / `<chime.mid` | MIDI (ホスト経由で URL から取得 / 端末 `/midi/` 内) |
+| `@N` | N 秒鳴動 (0 = 1 曲) |
+| `*N` | N 回繰り返し |
 
-```
-会議!              → デフォルト（10分前）にアラーム
-!朝礼              → 位置は任意、先頭でもOK
-```
+全角 `！－１０！` も可。RRULE は `recurring_ical_events` により DAILY/WEEKLY/MONTHLY/YEARLY, INTERVAL, BYDAY,
+BYMONTHDAY, COUNT, UNTIL, EXDATE, **RECURRENCE-ID** (個別回の変更), TZID をすべて正しく扱います。
 
-閉じ `!` のない単独の `!` は、config の `alarm_offset`（デフォルト10分前）でアラームが設定されます。
+### 鳴動状態のルール
 
-#### `!...!` ペア（詳細指定）
-
-`!` で囲んだ中にパラメータを記述すると、詳細なアラーム設定が可能です。
-
-```
-会議!-10!          → 10分前にアラーム
-会議!+5!           → 5分後にアラーム
-会議!-0!           → 時刻ちょうどにアラーム
-```
-
-### パラメータ記号（`!...!` 内で使用）
-
-| 記号 | 意味 | 例 |
-|------|------|-----|
-| `-N` | N分前にアラーム | `!-10!` = 10分前 |
-| `+N` | N分後にアラーム | `!+5!` = 5分後 |
-| `-N,-M,...` | カンマ区切りで複数アラーム | `!-25,-15,-5!` = 25/15/5分前の3回 |
-| `>filename` | MIDIファイル（URLからDL） | `!>song.mid!` |
-| `<filename` | MIDIファイル（SDカードから） | `!<chime.mid!` |
-| `@N` | N秒間鳴動（0=1曲） | `!@15!` = 15秒 |
-| `*N` | N回繰り返し | `!*3!` = 3回 |
-
-1イベントあたり最大 `MAX_ALARMS_PER_EVENT`（既定6個）まで登録できます。
-複数の `!...!` ブロックを並べた場合や、複数ブロック間で同じオフセットが現れた場合は重複排除されます。
-
-### 組み合わせ例
-
-```
-会議!-10>song.mid@15*2!    → 10分前、URLからDL、15秒間、2回
-打合せ!+5<chime.mid*3!     → 5分後、SDから、1曲、3回
-集合!@8!                    → デフォルト時間前、8秒間鳴動
-発表!-0@20*5!               → 時刻ちょうど、20秒間、5回
-会議!                       → デフォルト（10分前）にアラーム（単独!）
-試験!-25,-15,-5!            → 25/15/5分前の3回鳴動
-本番!-30,-10,-0@20*2!       → 30/10/0分前の3回、各20秒×2回
-```
-
-タイトルでもGoogleカレンダーの説明文でも、どこに書いても同じように機能します。
-
-### マーカー検索優先順位
-
-1. **SUMMARY（タイトル）** の `!` を最優先で検索
-2. SUMMARY に `!` がなければ **DESCRIPTION（説明文）** を検索
-
-### パラメータ優先順位
-
-| 項目 | マーカー指定あり | マーカー指定なし |
-|------|-----------------|-----------------|
-| アラーム時刻 | `-N` / `+N` の値 | config の alarm_offset |
-| MIDIファイル | `>file` / `<file` | config の midi_file |
-| 鳴動時間 | `@N` | config の play_duration |
-| 繰り返し | `*N` | config の play_repeat |
-
-## 繰り返し予定（RRULE）と取り込み範囲 (v040)
-
-### 取り込みウィンドウ
-
-予定の取り込みは **今日0:00 〜 2週間先（14日）** に限定されます。過去の予定は表示しません。
-これにより処理・メモリ負荷を抑えつつ、直近2週間の予定を漏れなく表示します。
-
-### 繰り返し予定の展開
-
-Googleカレンダー等のICSは、定期予定を「最初の1回分の `DTSTART` + `RRULE`」という
-単一イベントで出力します。本アプリは `RRULE` を解釈し、**取り込みウィンドウ内で発生する
-各回を個別の予定として展開**します（開始日が過去でも、今後2週間に発生する回は表示されます）。
-
-対応する `RRULE` パラメータ:
-
-| パラメータ | 対応 | 例 |
-|-----------|------|-----|
-| `FREQ` | DAILY / WEEKLY / MONTHLY / YEARLY | `FREQ=WEEKLY` |
-| `INTERVAL` | N回ごと | `INTERVAL=2`（隔週など） |
-| `BYDAY` | 曜日指定（月内序数も可） | `BYDAY=MO,WE,FR` / `BYDAY=3TU`（第3火曜） |
-| `BYMONTHDAY` | 日指定（負=月末から） | `BYMONTHDAY=15` / `BYMONTHDAY=-1`（月末） |
-| `COUNT` | 回数で終了 | `COUNT=10` |
-| `UNTIL` | 日時で終了（DATE形式は当日いっぱい） | `UNTIL=20260701T000000Z` |
-| `EXDATE` | 除外日 | `EXDATE:20260610T100000Z` |
-
-注意・制限:
-
-- タイムゾーンは **JST固定**。`DTSTART;TZID=...` の海外TZ予定は時刻がずれる場合があります。
-- `RECURRENCE-ID`（繰り返しの特定回だけ時刻変更）は未対応で、元の回と変更後の回が二重に出ることがあります。
-- アラームマーカー `!` は各展開回に同じく適用されます。
+- 初回起動時に既に過去 (10 分以上前) のアラームは expired (鳴らさない)
+- 後から `!` を付けた予定は開始時刻 + 24 時間まで鳴らす (v051 と同じ)
+- 予定の時刻が変わると再武装
+- 鳴動済みは `*`、未鳴動は `♪` で一覧に表示
 
 ## 画面と操作
 
-### 画面一覧
+| 画面 | スイッチ | タッチ |
+|---|---|---|
+| 一覧 | L/R: 選択移動, P: 設定 | 行: 詳細, 前日/翌日/今日/詳細ボタン, 左上: スクリーンショット送信 |
+| 詳細 | L/R: スクロール, P: 戻る | 任意: 戻る (30 秒で自動復帰) |
+| 鳴動中 | — | 任意: 停止 |
+| 設定 | L/R: 移動, P: 決定 | 項目タップ |
 
-| 画面 | 説明 |
-|------|------|
-| イベント一覧 | カレンダー表示（今日〜2週間先）。アラーム付きは♪、次の予定は▶（太字）、選択行は下線表示。ヘッダーに現在時刻・最終更新時刻・WiFi/SD状態、フッターに次アラーム（日付付き） |
-| イベント詳細 | SUMMARY + DESCRIPTION 全文表示（スクロール対応） |
-| アラーム再生 | アラーム発火時の表示。時刻・タイトル・説明文 |
-| 設定メニュー | 全20項目の設定変更 |
-| キーボード | 文字入力（SSID/URL等） |
-| MIDI選択 | /midi/ 内のファイル選択 |
+ヘッダー右: 最終同期時刻, ` fchNX` (ホスト側 ICS N 本目失敗), ` !W` WiFi 断, ` !H` ホスト不達, ` !T` 時刻未設定。
+右上 ●: ホスト接続中は 5 秒で明滅、不達時は中空 ○ のまま。
 
-### スイッチ操作
+設定メニュー: ホストと再同期 / Server Host / Server Port / WiFi SSID / WiFi Pass / MIDI File / MIDI Baud / Port /
+Sound Test / スクリーンショット送信 / Save & Exit。
 
-| スイッチ | 一覧画面 | 詳細画面 | 設定画面 | アラーム中 |
-|----------|---------|---------|---------|-----------|
-| L（左） | 前日 / 長押し:設定 | ↑スクロール | ↑ / 一番上で戻る | （なし） |
-| R（右） | 翌日 | ↓スクロール | ↓ | （なし） |
-| P（中央） | 設定メニュー | （なし） | 決定 | 停止 |
+## ホスト不達時の端末の振る舞い
 
-### タッチ操作
-
-| 画面 | タッチ動作 |
-|------|-----------|
-| 全画面共通（左上） | スクリーンショット保存（PGM形式、SDカードへ連番保存） |
-| 一覧画面 | イベントタップで詳細表示 |
-| 詳細画面 | 任意タップで一覧に戻る |
-| アラーム中 | 任意タップで停止 |
-
-## スクリーンショット
-
-任意の画面で左上隅（80×80ピクセル）をタッチすると、現在の画面内容をSDカードに保存します。
-
-- 保存形式: PGM（Portable GrayMap）
-- ファイル名: `/screenshots/ss1.pgm`, `/screenshots/ss2.pgm`, ... と連番
-- 画面サイズ: 540×960ピクセル、グレースケール
-- シリアルログ: `Screenshot saved: /screenshots/ss3.pgm (540x960)`
-
-PGMファイルはGIMP、IrfanView、ImageMagick等で開けます。PNGへの変換:
-```bash
-magick ss1.pgm ss1.png
-```
-
-## 設定メニュー（全20項目）
-
-| 項目 | 操作 | 選択肢 |
-|------|------|--------|
-| WiFi SSID | キーボード | 文字入力 |
-| WiFi Pass | キーボード | 文字入力 |
-| ICS URL | キーボード | 文字入力 |
-| ICS User | キーボード | 文字入力 |
-| ICS Pass | キーボード | 文字入力 |
-| MIDI File | ファイル選択 | /midi/ 内から |
-| MIDI URL | キーボード | ベースURL |
-| MIDI Baud | 選択 | 31250 / 31520 / 38400 |
-| Port | 選択 | A(G25) / B(G26) / C(G18) |
-| Alarm Offset | トグル | 0〜60分（5分刻み） |
-| Time Format | トグル | 24h / 12h |
-| Text Display | トグル | 折り返し / 切り詰め |
-| ICS Poll | トグル | 1 / 5 / 10 / 15 / 30 / 60分 |
-| Play Duration | トグル | 1曲 / 5 / 10 / 15 / 20秒 |
-| Play Repeat | トグル | 1 / 2 / 3 / 4 / 5回 |
-| Notify Topic | キーボード | ntfy トピック名 |
-| Notify Test | 実行 | テスト通知送信 |
-| ICS Update | 実行 | 即時再取得 |
-| Sound Test | 実行 | テスト再生 |
-| Save & Exit | 実行 | 保存して戻る |
-
-## メモリ管理（v029）
-
-### PSRAM活用
-
-イベント配列（`EventItem[300]`）をPSRAM（8MB搭載、約4MB利用可能）に配置。
-DRAMはWiFi/SSL/フォント等の動的処理専用となり、ヒープ断片化の問題を根本解決。
-
-```
-EventItem構造:
-  text[4000]    summary \0 description \0 の結合バッファ
-  midi_file[64] MIDIファイル名
-  その他        時刻・フラグ等（約88byte）
-  合計 ≒ 4KB/イベント × 300 = 約1.2MB（PSRAM上）
-```
-
-summaryとdescriptionは1つのバッファ`text[]`に格納されます。summaryは先頭から最初の`\0`まで、descriptionはその次の`\0`までです。summaryが短ければdescriptionに多くの領域が使え、柔軟に管理されます。
-
-### 自動復旧メカニズム (v040改訂)
-
-ヒープ回収のためのサイレント再起動は、**次フェッチの直前**（=直近データが既に画面に
-描画された後）に一本化されています。再起動しても e-paper は表示を保持し、再起動後の
-フェッチで自然に更新されるため、画面が空白になりません。
-
-| 条件 | 動作 |
-|------|------|
-| 次フェッチ直前に maxBlock < 38KB | サイレント再起動でヒープ回収（画面は維持） |
-| 部分フェッチ（一部URL失敗） | **再起動しない**。取得できた分を採用して描画し、失敗URLは次回再取得 |
-| 全URL失敗かつ既存データ0件 | 旧データ復帰＋バックオフ。ヒープ逼迫時のみ再起動 |
-| ICSフェッチ連続失敗 | バックオフ（最大30分）で再試行間隔を延長 |
-
-> v039までの「部分フェッチ時にWiFiが生きていれば即サイレント再起動」は、3本中1本でも
-> 失敗すると再起動ループになり画面が更新されない原因だったため**撤廃**しました。
-
-### アラーム保護
-
-再起動の延期は **MIDI再生中のみ**行い、再生完了後に自動的に再起動します。
-（アラーム直前でも再起動は安全です。再起動後のフェッチで triggered 状態がグレース
-判定により再評価され、直近・未来のアラームは改めて発火します。）
-
-## ntfy プッシュ通知
-
-### セットアップ
-
-1. スマートフォンに [ntfy](https://ntfy.sh/) アプリをインストール
-2. アプリでトピックを購読（例: `M5PaperAlarm-yourname`）
-3. M5Paper の設定で Notify Topic に同じトピック名を入力
-4. Notify Test で動作確認
-
-アラーム発火時に `HH:MM イベント名` の通知がスマートフォンに届きます。
-
-## カレンダー更新
-
-- 設定した間隔（ics_poll_min）で自動更新
-- イベント0件の場合は30秒間隔で積極リトライ
-- ICSストリーミングパーサーにより、ダウンロードとパースを同時処理
-- HTTPキャッシュバイパス: `Cache-Control: no-cache` ヘッダーとURLタイムスタンプパラメータにより、CDN/プロキシのキャッシュを回避
-- ヘッダーに最終更新時刻（`HH:MM`）とURL毎の失敗状態（`fchNX`）を表示し、データの鮮度・取得状況を目視確認可能
-- 表示範囲：**今日0:00〜2週間先（14日）**。過去は表示しません (v040)
-- 繰り返し予定(RRULE)はこの範囲内で各回に展開されます (v040)
+- 手元のテーブルで時刻通りに鳴動する (ACK は保持して後で再送)
+- 10 分不達で WiFi を張り直し、2 時間不達で再起動
+- 時刻はホストから受け取った最後の値で進む (RTC)。ホスト復帰時に補正
 
 ## ファイル構成
 
 ```
-M5PaperSchedAL/
-├── M5PaperSchedAL.ino   メインスケッチ（setup/loop/復旧ロジック）
-├── types.h              構造体・定数・列挙型定義
-├── globals.h / .cpp     グローバル変数宣言・定義
-├── config.cpp           config.json 読み書き
-├── ics_parser.cpp       ICSストリーミングパーサー・フェッチ
-├── input_handler.cpp    スイッチ・タッチ・アラーム発火処理
-├── midi_player.cpp      MIDI再生制御
-├── network.cpp          WiFi接続・ntfy通知・MIDIダウンロード
-├── sd_utils.cpp         SD初期化・ヘルスチェック
-├── ui_common.cpp        共通描画ユーティリティ
-├── ui_list.cpp          イベント一覧画面
-├── ui_detail.cpp        イベント詳細画面
-├── ui_settings.cpp      設定メニュー画面
-├── ui_keyboard.cpp      ソフトウェアキーボード
-├── utf8_utils.cpp       UTF-8文字列処理
-├── SimpleMIDIPlayer.h   SMF パーサー（ヘッダオンリー）
-└── README.md            このファイル
+M5PaperSchedAL.ino   setup/loop (同期・ハートビート・自動更新)
+types.h globals.h/.cpp
+config.cpp           LittleFS /config.json
+fs_utils.cpp         LittleFS 初期化・MIDI 一覧
+network.cpp          WiFi・素の HTTP クライアント・MIDI 取得・スクリーンショット送信
+sync_client.cpp      全件同期 (NDJSON)・ハートビート・コマンド・時刻合わせ・ACK 再送
+logger.cpp           ログ/操作イベントのキュー (ハートビートで転送)
+midi_player.cpp      MIDI 再生
+input_handler.cpp    スイッチ/タッチ/アラーム発火
+ui_*.cpp             画面
+SimpleMIDIPlayer.h   SMF パーサ (LittleFS)
+partitions_m5paper.csv
+data/                LittleFS イメージ元
+server/              ホスト側 (Python, 標準ライブラリ http.server + icalendar/recurring-ical-events/requests)
+old/                 v051 の端末内 ICS パーサ等 (参考。ビルド対象外)
+sdcard/              旧 SD カード内容 (フォントの取得元として残置)
 ```
 
-## ビルド
+## ハードウェア
 
-### Arduino IDE
+| 部品 | |
+|---|---|
+| M5Paper v1.1 | ESP32 + 4.7" E-Ink + 8MB PSRAM + 16MB Flash |
+| M5Stack Unit Synth (SAM2695) | Port A(G25)/B(G26, 既定)/C(G18) |
 
-1. M5Stack ボードパッケージ 2.1.4 をインストール
-2. ボードを「M5Paper」に設定
-3. ArduinoJson ライブラリをインストール
-4. M5PaperSchedAL.ino を開いてビルド・書き込み
+## 履歴
 
-## トラブルシューティング
-
-### WiFi に接続できない
-
-- SSID とパスワードを確認（2.4GHz のみ対応）
-- シリアルモニタで接続状態を確認
-
-### カレンダーが取得できない
-
-- ICS URL が有効か確認（ブラウザでアクセスしてみる）
-- Basic認証が必要なら ICS User/Pass を設定
-- シリアルモニタで HTTP ステータスコードを確認
-
-### MIDI が再生されない
-
-- Port 設定（A/B/C）を確認
-- Unit Synth の接続を確認
-- Sound Test で動作テスト
-- SD に MIDI ファイルが存在するか確認
-
-### アラームが発火しない
-
-- 予定タイトルに `!` が含まれているか確認
-- シリアルモニタの ALARM CHECK ログで pending アラーム一覧を確認
-- アラーム猶予期間: 予定時刻の10分以上過去は自動 triggered 扱い
-
-### SD カードエラー
-
-- SD カードを抜き差しして P ボタンを押す
-- FAT32 フォーマットを確認
-
-### シリアルモニタ（115200bps）ログの読み方
-
-```
-=== ALARM CHECK [06/03 12:30:00] ver.040 heap:220684 sd:OK ===
-  [12] P1451.99 Draft Writing Meeting!
-      event:06/04 23:00  alarm:06/04 22:50  off:10min  remain:377888s
-=== events:42, pending:6, heap:220684, maxBlock:110580, WiFi:-43, fails:0 ===
-```
-
-- **heap**: DRAM空き容量
-- **maxBlock**: 最大連続空きブロック（SSL接続に約32KBのI/Oバッファが必要。38KB未満で次フェッチ前に再起動回収）
-- **fails**: 連続フェッチ失敗回数（0が正常）
-- **pending**: 未発火のアラーム数
-- `[LEAK] mbed INTERNAL fallback NNNN bytes`: mbedTLSのI/Oバッファが内部DRAMに確保された場合に出力（ヒープリーク調査用） (v040)
-
-## 仕様
-
-| 項目 | 値 |
-|------|-----|
-| ディスプレイ | 540 x 960 e-Ink（M5Paper v1.1） |
-| プロセッサ | ESP32（DRAM 520KB + PSRAM 8MB） |
-| MIDI通信 | Serial2 TX（ハーフデュプレックス） |
-| MIDI形式 | SMF Format 0/1、SysEx 対応 |
-| 最大イベント数 | 300（PSRAM上、config で制限可能） |
-| イベントバッファ | 4KB/イベント（summary + description 結合） |
-| 取り込み範囲 | 今日0:00〜2週間先（14日）、過去なし (v040) |
-| 繰り返し予定 | RRULE 展開対応（FREQ/INTERVAL/BYDAY/BYMONTHDAY/COUNT/UNTIL/EXDATE） (v040) |
-| 日時表示 | 24時間制 / 12時間制（A/P表記付き） |
-| タイムゾーン | JST (UTC+9) 固定 |
-| NTPサーバー | pool.ntp.org, time.google.com |
-| ICS更新間隔 | 1 / 5 / 10 / 15 / 30 / 60分 |
-| アラーム猶予期間 | 600秒 |
-| WiFi接続タイムアウト | 15秒 |
-| HTTP読み取りタイムアウト | 15秒 |
-| 自動表示更新 | 3分間無操作後、毎分チェック |
-| フォント | IPAexゴシック (ipaexg.ttf) |
-
-## ライセンス
-
-MIT License
-
-## 謝辞
-
-- [M5Stack](https://m5stack.com/) — M5Paper ハードウェア
-- [IPAexフォント](https://moji.or.jp/ipafont/) — 日本語フォント
-- [ntfy.sh](https://ntfy.sh/) — プッシュ通知サービス
-
-## 更新履歴
-
-| 日付 | バージョン | 内容 |
-|------|-----------|------|
-| 2026-06-18 | v049 | 「次の予定」表示を破線→**▶マーク（太字）の専用列**に変更（音符♪列の隣）。破線が分かりにくい問題を解消。本文開始を右へシフト。フッターの次アラームに日付を併記（`次AL 6/18 22:50`）で「いつの予定か」を明示 |
-| 2026-06-18 | v048 | 「次の予定」マーカーと選択行下線が同じ黒で見分け付かない問題に対し、次の予定を一旦破線化して区別（v049で▶へ刷新）。次アラーム表示に日付併記を追加 |
-| 2026-06-17 | v047 | 予定なし誤発火の調査用診断ビルド。SDログを**強制ON**（config.json値を無視）。発火点に`ALARM-FIRE`（at/now/late/allday）、登録時に`ALARM-ARM-PAST`（通常fetchでtriggered継承失敗→過去アラーム再武装→即発火を捕捉）をSDログへ記録。※原因特定後はconfig.cppの強制ON行を削除し既定OFFへ戻す |
-| 2026-06-17 | v046 | SDカードログ機能のデフォルトをON→OFFに変更（SDカード劣化回避）。診断が必要なときだけ設定メニュー先頭の「SDカードログ機能」でONにする運用 |
-| 2026-06-17 | v045 | ヒープリーク根治: `parseDT`のUTC変換がイベント毎に`setenv`+`tzset`を呼び、Google ICS(ほぼ全timestampがUTC)で1フェッチ数千回→newlibが内部ヒープを確保し続け約30KB/cycleリークしていた。割り当てゼロの純粋計算(timegm_pure)に置換。これが全Xの真の根治。再起動依存を解消 |
-| 2026-06-17 | v044 | 全Xの真因＝38KB/cycleのヒープリークと判明（WiFi/サーバは無実）。予防再生しきい値を`maxBlock<38000`→`<45000`に修正（リークでmaxBlockが38900に張り付き旧判定が永久未発火→全Xに転落していた）。出血止め。根治はリーク調査が必要 |
-| 2026-06-17 | v043 | 薄文字(リフレッシュ波形)対策: ①サイレント再起動でもGC16でフル塗り直し、②GC16フル掃除を毎時→20分間隔(トラブル中も実行)、③夜間(0〜6時)は通常再描画をGLR16→GC16に切替。温度/電圧は無関係と判明したためリフレッシュ側で対処 |
-| 2026-06-17 | v042 | フェッチ連続失敗(1本でもX)が15分継続したらサイレント再起動（全X時に永久に再起動しない問題を修正）、縮約診断ログをSerial＋SD(ロール式・設定でON/OFF)に記録、ログへ温度/バッテリ電圧/RSSIを追加（薄文字＝温度依存波形/電源低下 の相関解析用） |
-| 2026-06-08 | v041 | ICS途中切断(truncation)を検出してスケジュール消失を修正 |
-| 2026-06-03 | v040 | 繰り返し予定(RRULE/EXDATE)の展開、取り込みを今日〜2週間先に限定、選択行を下線表示化、部分フェッチ時の再起動ループ撤廃（部分データ採用）、`reboot_pending`永久延期バグ修正、PSRAM枯渇時のクラッシュ防止、MIDI DLのWDT対策、リーク計装 |
-| 2026-04-05 | v030 | ヘッダーに最終更新時刻表示、アラームマーカー統一（タイトル/説明文共通で `!` / `!...!` 検出）、HTTPキャッシュバイパス |
-| 2026-03-28 | v029 | 画面リフレッシュ改善（GC16を毎時に制限）、WiFi再接続タイムアウト短縮 |
-| 2026-03-18 | — | 画面更新タイミング修正 |
-| 2026-03-17 | — | PSRAM上でのSSLバッファ確保対応 |
-| 2026-03-11 | — | 視認性改善、config.jsonデバッグ表示、画面リフレッシュ問題修正 |
-| 2026-03-10 | — | 詳細画面の濃度修正、自動一覧復帰、「予定なし」表示改善 |
-| 2026-03-06 | — | フォントサイズ・表示レイアウト調整 |
-| 2026-03-03 | — | UI全般更新 |
-| 2026-02-27 | — | ビルドディレクトリの.gitignore追加 |
-| 2026-02-21 | — | UI色定数を ui_colors.h に集約 |
-| 2026-02-14 | — | PSRAM活用によるメモリ管理刷新、スクリーンショット機能、SSLメモリリーク対策 |
-| 2026-02-12 | — | MIDIサンプルファイル追加、SD・パネル更新タイミング改善 |
-| 2026-02-11 | — | SDカードリセット対応、ソース整理 |
-| 2026-02-07 | — | スケジュールバッファ更新 |
-| 2026-02-04 | — | ntfy通知追加、画面更新最適化、アラームコマンド体系変更 |
-| 2026-02-03 | — | ヒープリーク対策 |
-| 2026-02-02 | — | 初回リリース（アラーム機能・ICS取得・MIDI再生）|
+- **v100**: thin client 化。ICS/SSL/アラーム状態/ntfy をホスト (`server/`) へ移動。SD 廃止 → LittleFS。
+  Active Sensing、コマンド/操作イベントの双方向通信、ホスト時刻同期、ACK 再送、ダッシュボード。
+  取り込み範囲 2 週間 → 60 日、max_events 99 → 299、desc 500 → 3500B。
+- v051 以前: 端末単体構成 (old/ と git 履歴を参照)

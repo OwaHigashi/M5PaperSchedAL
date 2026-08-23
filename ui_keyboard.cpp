@@ -33,12 +33,14 @@ void drawKeyboard() {
 
     // 編集対象フィールド名
     canvas.setTextSize(26);
-    static const char* field_names[] = {
-        "WiFi SSID", "WiFi Pass", "ICS URL", "ICS User", "ICS Pass", "", "MIDI URL"
-    };
-    if (keyboard_target >= 0 && keyboard_target <= SET_MIDI_URL) {
-        drawText(String("編集: ") + field_names[keyboard_target], 10, 10);
+    const char* fname = "";
+    switch (keyboard_target) {
+        case SET_SERVER_HOST: fname = "Server Host"; break;
+        case SET_SERVER_PORT: fname = "Server Port"; break;
+        case SET_WIFI_SSID:   fname = "WiFi SSID"; break;
+        case SET_WIFI_PASS:   fname = "WiFi Pass"; break;
     }
+    drawText(String("編集: ") + fname, 10, 10);
 
     canvas.setTextSize(20);
     char lenBuf[16];
@@ -187,11 +189,8 @@ void processKeyboardHit(int hit) {
         switch (keyboard_target) {
             case SET_WIFI_SSID: strlcpy(config.wifi_ssid, keyboard_buffer.c_str(), sizeof(config.wifi_ssid)); break;
             case SET_WIFI_PASS: strlcpy(config.wifi_pass, keyboard_buffer.c_str(), sizeof(config.wifi_pass)); break;
-            case SET_ICS_URL:   strlcpy(config.ics_url, keyboard_buffer.c_str(), sizeof(config.ics_url)); break;
-            case SET_ICS_USER:  strlcpy(config.ics_user, keyboard_buffer.c_str(), sizeof(config.ics_user)); break;
-            case SET_ICS_PASS:  strlcpy(config.ics_pass, keyboard_buffer.c_str(), sizeof(config.ics_pass)); break;
-            case SET_MIDI_URL:  strlcpy(config.midi_url, keyboard_buffer.c_str(), sizeof(config.midi_url)); break;
-            case SET_NTFY_TOPIC: strlcpy(config.ntfy_topic, keyboard_buffer.c_str(), sizeof(config.ntfy_topic)); break;
+            case SET_SERVER_HOST: strlcpy(config.server_host, keyboard_buffer.c_str(), sizeof(config.server_host)); break;
+            case SET_SERVER_PORT: { int p = keyboard_buffer.toInt(); if (p > 0 && p < 65536) config.server_port = p; break; }
         }
         keyboard_symbol_mode = false;
         keyboard_caps = false;

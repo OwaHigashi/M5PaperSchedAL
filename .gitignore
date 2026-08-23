@@ -28,3 +28,8 @@ config.json
 sdcard/cache/
 sdcard/screenshots/
 sdcard/sources/
+
+# 端末フラッシュ(LittleFS)イメージ元: フォントは大きいので対象外、config.json は機密
+data/fonts/*.ttf
+data/config.json
+old/

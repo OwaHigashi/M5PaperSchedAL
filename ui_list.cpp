@@ -212,30 +212,9 @@ void drawList(bool fast, bool skip_push, bool highlight_changes, bool clean_refr
     drawText(buf, 10, 8);
     drawText(buf, 11, 8);
 
-    // 最終更新時刻 + URL毎のfetch状態 + WiFi/SD
-    //   "22:31 fch1X fch3X !W !S"  のように失敗要素だけ追記
     canvas.setTextSize(22);
     char statusBuf[96];
-    int spos = 0;
-    if (last_fetch > 1000000000) {
-        struct tm ft; localtime_r(&last_fetch, &ft);
-        spos += snprintf(statusBuf + spos, sizeof(statusBuf) - spos,
-                         "%02d:%02d", ft.tm_hour, ft.tm_min);
-    } else {
-        spos += snprintf(statusBuf + spos, sizeof(statusBuf) - spos, "--:--");
-    }
-    for (int i = 0; i < fetch_url_count && spos < (int)sizeof(statusBuf) - 8; i++) {
-        if (fetch_url_status[i] == 2) {
-            spos += snprintf(statusBuf + spos, sizeof(statusBuf) - spos,
-                             " fch%dX", i + 1);
-        }
-    }
-    if (WiFi.status() != WL_CONNECTED) {
-        spos += snprintf(statusBuf + spos, sizeof(statusBuf) - spos, " !W");
-    }
-    if (!sd_healthy) {
-        spos += snprintf(statusBuf + spos, sizeof(statusBuf) - spos, " !S");
-    }
+    buildStatusText(statusBuf, sizeof(statusBuf));
     canvas.setTextColor(COL_HEADER_TEXT);
     drawText(statusBuf, 260, 10);
 
@@ -271,19 +250,20 @@ void drawList(bool fast, bool skip_push, bool highlight_changes, bool clean_refr
         canvas.setTextSize(22);
         if (WiFi.status() != WL_CONNECTED) {
             drawText("WiFi未接続", 270, 260);
-        } else if (fetch_fail_count >= 3) {
+        } else if (!host_online) {
             char msg[96];
-            int backoff_min = min((fetch_fail_count - 2) * 5, 30);
-            snprintf(msg, sizeof(msg), "サーバ接続不可 (%d回失敗)", fetch_fail_count);
+            snprintf(msg, sizeof(msg), "ホスト %s:%d に接続できません", config.server_host, config.server_port);
             drawText(msg, 270, 250);
-            snprintf(msg, sizeof(msg), "次回再試行: %d分後", backoff_min);
-            drawText(msg, 270, 280);
-        } else if (fetch_fail_count > 0) {
-            char msg[64];
-            snprintf(msg, sizeof(msg), "ICS取得失敗 (%d回)", fetch_fail_count);
-            drawText(msg, 270, 260);
+            if (sync_fail_count > 0) {
+                snprintf(msg, sizeof(msg), "同期失敗 %d回", sync_fail_count);
+                drawText(msg, 270, 280);
+            }
+        } else if (last_fetch == 0) {
+            drawText("ホストと同期中...", 270, 260);
+        } else {
+            drawText("(ホスト側に表示対象の予定がありません)", 270, 260);
         }
-        drawText("P長押し → 設定", 270, 330);
+        drawText("P → 設定", 270, 330);
         canvas.setTextDatum(TL_DATUM);
     }
 

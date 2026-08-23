@@ -1,5 +1,4 @@
 #include "globals.h"
-#include <SD.h>
 #include <time.h>
 
 //==============================================================================
@@ -10,9 +9,9 @@ void checkSwitches() {
     bool sw_r = digitalRead(SW_R_PIN);
     bool sw_p = digitalRead(SW_P_PIN);
 
-    if (!sw_l && sw_l_prev) { Serial.println("SW_L pressed"); unsigned long t=millis(); last_interaction_ms = millis(); handleSwitch('L'); Serial.printf("SW_L handled in %lu ms\n", millis()-t); }
-    if (!sw_r && sw_r_prev) { Serial.println("SW_R pressed"); unsigned long t=millis(); last_interaction_ms = millis(); handleSwitch('R'); Serial.printf("SW_R handled in %lu ms\n", millis()-t); }
-    if (!sw_p && sw_p_prev) { Serial.println("SW_P pressed"); unsigned long t=millis(); last_interaction_ms = millis(); handleSwitch('P'); Serial.printf("SW_P handled in %lu ms\n", millis()-t); }
+    if (!sw_l && sw_l_prev) { Serial.println("SW_L pressed"); last_interaction_ms = millis(); uiEventPush("btn", 0, 0, "L"); handleSwitch('L'); }
+    if (!sw_r && sw_r_prev) { Serial.println("SW_R pressed"); last_interaction_ms = millis(); uiEventPush("btn", 0, 0, "R"); handleSwitch('R'); }
+    if (!sw_p && sw_p_prev) { Serial.println("SW_P pressed"); last_interaction_ms = millis(); uiEventPush("btn", 0, 0, "P"); handleSwitch('P'); }
 
     sw_l_prev = sw_l;
     sw_r_prev = sw_r;
@@ -128,10 +127,24 @@ void handleSwitch(char sw) {
 //==============================================================================
 // タッチ処理
 //==============================================================================
+static const char* uiShort() {
+    switch (ui_state) {
+        case UI_LIST: return "list"; case UI_DETAIL: return "detail"; case UI_PLAYING: return "playing";
+        case UI_SETTINGS: return "settings"; case UI_KEYBOARD: return "kbd"; default: return "sel";
+    }
+}
+
+int findEventById(const char* id) {
+    if (!id || !id[0]) return -1;
+    for (int i = 0; i < event_count; i++) if (strcmp(events[i].id, id) == 0) return i;
+    return -1;
+}
+
 void handleTouch(int tx, int ty) {
     last_interaction_ms = millis();
+    uiEventPush("touch", tx, ty, uiShort());
 
-    // 左上タッチ → スクリーンショット
+    // 左上タッチ → スクリーンショット (ホストへ送信)
     if (tx < 80 && ty < 80) {
         saveScreenshot();
         return;
@@ -208,6 +221,7 @@ void handleTouch(int tx, int ty) {
                 if (ty >= row_y0[i] && ty <= row_y1[i]) {
                     selected_event = row_event_idx[i];
                     ui_state = UI_DETAIL; detail_scroll = 0;
+                    uiEventPush("ui", 0, 0, events[selected_event].id);
                     drawDetail(selected_event);
                     return;
                 }
@@ -258,9 +272,12 @@ void handleTouch(int tx, int ty) {
 
 //==============================================================================
 // アラームチェック
+//   テーブル(alarm_time/triggered)はホスト由来。端末は時刻になったら鳴らし、
+//   完了を ACK する。ホストに届かなければ ACK を保持し再送する (sync_client)。
 //==============================================================================
 void checkAlarms() {
     if (midi_playing) return;
+    if (!time_valid) return;          // ホストから時刻をもらうまで鳴らさない
 
     time_t now = time(nullptr);
 
@@ -268,104 +285,59 @@ void checkAlarms() {
     if (now - last_alarm_debug >= 60) {
         last_alarm_debug = now;
         struct tm lt; localtime_r(&now, &lt);
-        Serial.printf("\n=== ALARM CHECK [%02d/%02d %02d:%02d:%02d] ver.%s heap:%d sd:%s ===\n",
-                      lt.tm_mon + 1, lt.tm_mday, lt.tm_hour, lt.tm_min, lt.tm_sec,
-                      BUILD_VERSION, ESP.getFreeHeap(), sd_healthy ? "OK" : "NG");
-
         int pending = 0;
-        for (int i = 0; i < event_count; i++) {
-            if (!events[i].has_alarm) continue;
-            bool anyPending = false;
-            for (int k = 0; k < events[i].alarm_count; k++) {
-                if (!events[i].triggered[k]) { anyPending = true; break; }
-            }
-            if (!anyPending) continue;
-            pending++;
-            struct tm st; localtime_r(&events[i].start, &st);
-            Serial.printf("  [%d] %s  event:%02d/%02d %02d:%02d\n",
-                          i, events[i].summary(),
-                          st.tm_mon+1, st.tm_mday, st.tm_hour, st.tm_min);
-            for (int k = 0; k < events[i].alarm_count; k++) {
-                if (events[i].triggered[k]) continue;
-                struct tm at; localtime_r(&events[i].alarm_time[k], &at);
-                long remain = (long)(events[i].alarm_time[k] - now);
-                Serial.printf("      AL%d: %02d/%02d %02d:%02d  off:%dmin  remain:%lds\n",
-                              k, at.tm_mon+1, at.tm_mday, at.tm_hour, at.tm_min,
-                              events[i].offset_min[k], remain);
-            }
-            if (strlen(events[i].midi_file) > 0)
-                Serial.printf("      midi:%s (%s)\n", events[i].midi_file, events[i].midi_is_url ? "URL" : "SD");
-        }
-        if (pending == 0) Serial.println("  (no pending alarms)");
-        Serial.printf("=== events:%d, pending:%d, heap:%d, maxBlock:%d, WiFi:%d, fails:%d ===\n\n",
-                      event_count, pending, ESP.getFreeHeap(), ESP.getMaxAllocHeap(),
-                      WiFi.RSSI(), fetch_fail_count);
+        for (int i = 0; i < event_count; i++)
+            for (int k = 0; k < events[i].alarm_count; k++) if (!events[i].triggered[k]) pending++;
+        Serial.printf("=== ALARM CHECK [%02d/%02d %02d:%02d:%02d] ver.%s ev=%d pending=%d heap=%u host=%s rev=%ld/%ld ===\n",
+                      lt.tm_mon + 1, lt.tm_mday, lt.tm_hour, lt.tm_min, lt.tm_sec, BUILD_VERSION,
+                      event_count, pending, ESP.getFreeHeap(), host_online ? "up" : "DOWN", local_rev, host_rev);
     }
 
-    // アラーム発火チェック
     for (int i = 0; i < event_count; i++) {
         if (!events[i].has_alarm) continue;
         int fireSlot = -1;
         for (int k = 0; k < events[i].alarm_count; k++) {
-            if (!events[i].triggered[k] && events[i].alarm_time[k] <= now) {
-                fireSlot = k;
-                break;
-            }
+            if (!events[i].triggered[k] && events[i].alarm_time[k] <= now) { fireSlot = k; break; }
         }
         if (fireSlot < 0) continue;
 
-        Serial.printf("\n*** ALARM FIRING! *** (slot %d, off=%dmin)\n",
-                      fireSlot, events[i].offset_min[fireSlot]);
-        Serial.printf("  Event: %s\n", events[i].summary());
-
-        // 診断(v047): 発火の全コンテキストをSDログへ。誤発火(予定なし鳴動)の真因特定用。
-        //   at>now なら定刻発火。at≪now(過去)なら再フェッチによる過去アラーム再武装が疑わしい。
-        logLine("ALARM-FIRE i=%d slot=%d off=%dm at=%ld now=%ld late=%lds allday=%d ac=%d '%.40s'",
-                i, fireSlot, events[i].offset_min[fireSlot],
-                (long)events[i].alarm_time[fireSlot], (long)now,
-                (long)(now - events[i].alarm_time[fireSlot]),
-                events[i].is_allday ? 1 : 0, events[i].alarm_count, events[i].summary());
-
-        // ntfy通知
-        {
-            struct tm st; localtime_r(&events[i].start, &st);
-            char notifyMsg[200];
-            int off = events[i].offset_min[fireSlot];
-            const char* suffix = "";
-            char offBuf[32]; offBuf[0] = '\0';
-            if (off > 0)      snprintf(offBuf, sizeof(offBuf), " (%d分前)", off);
-            else if (off < 0) snprintf(offBuf, sizeof(offBuf), " (%d分後)", -off);
-            (void)suffix;
-            snprintf(notifyMsg, sizeof(notifyMsg), "%02d:%02d %s%s",
-                     st.tm_hour, st.tm_min, events[i].summary(), offBuf);
-            sendNtfyNotification("M5Paper Alarm", notifyMsg);
+        // 大幅に過去のもの(ホストが expired にしそこねた等)は鳴らさず ACK だけ返す
+        if (now - events[i].alarm_time[fireSlot] > 3600) {
+            char aid[40]; alarmIdOf(events[i], fireSlot, aid, sizeof(aid));
+            events[i].triggered[fireSlot] = true;
+            logLine("skip stale alarm %s late=%lds", aid, (long)(now - events[i].alarm_time[fireSlot]));
+            ackAlarm(aid, "stale");
+            continue;
         }
+
+        char aid[40]; alarmIdOf(events[i], fireSlot, aid, sizeof(aid));
+        Serial.printf("\n*** ALARM FIRING *** %s '%s' (off=%dmin)\n", aid, events[i].summary(), events[i].offset_min[fireSlot]);
+        logLine("ALARM-FIRE %s late=%lds '%.40s'", aid, (long)(now - events[i].alarm_time[fireSlot]), events[i].summary());
 
         playing_event = i;
         playing_alarm_idx = fireSlot;
+        strlcpy(playing_alarm_id, aid, sizeof(playing_alarm_id));
+        play_file_override[0] = '\0';
 
         int dur = events[i].play_duration_sec;
         if (dur < 0) dur = config.play_duration;
         play_duration_ms = dur * 1000;
-
         int rep = events[i].play_repeat;
         if (rep < 0) rep = config.play_repeat;
         if (rep < 1) rep = 1;
         play_repeat_remaining = rep;
 
-        Serial.printf("  Duration: %s, Repeat: %d\n",
-                      dur == 0 ? "1song" : (String(dur) + "sec").c_str(), play_repeat_remaining);
-
         String midiPath = getMidiPath(i);
-        waitEPDReady();
-        Serial.printf("  MIDI: %s (exists:%s)\n", midiPath.c_str(), SD.exists(midiPath.c_str()) ? "Y" : "N");
-
         play_start_ms = millis();
         if (startMidiPlayback(midiPath.c_str())) {
             ui_state = UI_PLAYING;
             drawPlaying(i);
+            uiEventPush("alarm", 0, 0, aid);
+            sendHeartbeat(true);      // ホストへ即「鳴動中」を報告
         } else {
             events[i].triggered[fireSlot] = true;
+            playing_event = -1; playing_alarm_idx = -1; playing_alarm_id[0] = '\0';
+            ackAlarm(aid, "failed");
         }
         break;
     }

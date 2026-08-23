@@ -1,0 +1,10 @@
+{
+  "wifi_ssid": "your_wifi_ssid",
+  "wifi_pass": "your_wifi_password",
+  "server_host": "10.1.1.2",
+  "server_port": 8765,
+  "api_token": "",
+  "midi_file": "/midi/alarm.mid",
+  "midi_baud": 31250,
+  "port_select": 1
+}

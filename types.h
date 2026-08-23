@@ -6,7 +6,7 @@
 //==============================================================================
 // ビルドバージョン (※コード更新時はここを変更)
 //==============================================================================
-#define BUILD_VERSION "051"
+#define BUILD_VERSION "100"     // v100: thin-client (host does ICS/alarm/SSL; no SD)
 
 //==============================================================================
 // ピン定義
@@ -18,28 +18,38 @@
 //==============================================================================
 // デフォルト設定値・定数
 //==============================================================================
+#ifndef DEFAULT_SERVER_HOST
+#define DEFAULT_SERVER_HOST     "10.1.1.2"
+#endif
+#ifndef DEFAULT_SERVER_PORT
+#define DEFAULT_SERVER_PORT     8765
+#endif
 #define DEFAULT_MIDI_BAUD       31250   // UNIT_SYNTH_BAUD相当
-#define DEFAULT_ALARM_OFFSET    10      // デフォルト10分前
-#define DEFAULT_ICS_POLL_SEC    1800    // 30分ごと更新
-#define CONFIG_FILE             "/config.json"
+#define CONFIG_FILE             "/config.json"      // LittleFS (内蔵フラッシュ)
+#define PENDING_ACK_FILE        "/pending_acks.txt" // ホスト未達のアラーム完了通知
 #define MIDI_DIR                "/midi"
 #define MIDI_DL_DIR             "/midi-dl"
 #define FONT_PATH               "/fonts/ipaexg.ttf"
-#define TZ_JST                  "JST-9"
+#define TZ_DEFAULT              "JST-9"
 
 #define MAX_EVENTS              300
 #define MAX_ALARMS_PER_EVENT    6       // 1イベントあたりの最大アラーム数
+#define EVENT_ID_LEN            16
 #define ITEMS_PER_PAGE          12
-#define SD_CHECK_INTERVAL_MS    300000  // 5分
-#define MIN_HEAP_FOR_FETCH      20000   // ICSフェッチ前の最低ヒープ(byte) ※String排除後は低くてOK
 
-// ★ フェッチ連続失敗(=いずれかのURLがX)がこの時間継続したらメモリ刷新のため再起動。
-//    予定が一般に15分単位で組まれることを踏まえ15分。1本でも成功すればカウントは0に戻る。
-#define FETCH_FAIL_REBOOT_MS    (15UL * 60UL * 1000UL)  // 15分
+// ── ホスト通信 ──
+#define HB_INTERVAL_MS_DEFAULT  5000    // ハートビート(Active Sensing)間隔。ホストから上書き可
+#define HB_INTERVAL_PLAYING_MS  15000   // MIDI再生中は間引く(タイミング乱れ防止)
+#define FULL_SYNC_SEC_DEFAULT   600     // 最低でもこの間隔で全件再取得
+#define HTTP_TIMEOUT_MS         4000    // 1リクエストの応答待ち
+#define HOST_LOST_WIFI_RESET_MS (10UL * 60UL * 1000UL)   // ホスト不達10分でWiFi張り直し
+#define HOST_LOST_REBOOT_MS     (120UL * 60UL * 1000UL)  // ホスト不達2時間で再起動
+#define MAX_PENDING_ACKS        16
+#define UI_EVENT_QUEUE          24
+#define LOG_QUEUE               24
+#define LOG_LINE_LEN            160
 
 // ★ 薄文字対策(リフレッシュ波形)
-//   GC16_CLEANUP_MIN: 部分更新で薄くなる前にGC16フル掃除する間隔(分)。トラブル中も走る。
-//   NIGHT_*_HOUR    : 夜間=誰も見ていない時間帯[start,end)。この間は通常再描画もGLR16→GC16(濃)にする。
 #define GC16_CLEANUP_MIN        20
 #define NIGHT_START_HOUR        0
 #define NIGHT_END_HOUR          6
@@ -51,53 +61,55 @@
 // 構造体定義
 //==============================================================================
 struct Config {
+    // 端末ローカル設定 (LittleFS /config.json)。予定・アラーム関連の設定はすべてホスト側。
     char wifi_ssid[64];
     char wifi_pass[64];
-    char ics_url[512];            // カンマ区切りで複数ICS URL指定可
-    char ics_user[64];
-    char ics_pass[64];
-    char midi_file[64];
-    char midi_url[128];
-    char ntfy_topic[64];
+    char server_host[64];
+    int  server_port;
+    char api_token[64];
+    char midi_file[64];         // ローカル既定MIDI (/midi/alarm.mid)
     uint32_t midi_baud;
-    int alarm_offset_default;
     int port_select;            // 0=A, 1=B, 2=C
+    // ── ホストから受け取る表示設定 (ヘッダ行で毎回上書き) ──
     bool time_24h;
     bool text_wrap;
-    int ics_poll_min;
-    int play_duration;          // デフォルト鳴動時間(秒) 0=1曲
-    int play_repeat;
-    int max_events;
-    int max_desc_bytes;
-    int min_free_heap;          // ヒープ残量下限(KB)
-    bool sd_log_enabled;        // SDカードへの診断ログ記録 ON/OFF (SD劣化対策で切替可)
+    int  play_duration;         // 既定鳴動時間(秒) 0=1曲
+    int  play_repeat;
+    int  alarm_offset_default;  // 表示用
+    char midi_default[64];      // ホスト既定MIDI名 (ホストから取得)
+    char tz[32];
 };
 
 struct EventItem {
+    char id[EVENT_ID_LEN];      // ホストが付ける安定ID
     time_t start;
     char text[4000];            // summary \0 description \0
     char midi_file[64];
-    bool midi_is_url;
+    bool midi_is_url;           // true: ホストから取得 (/api/v1/midi/<name>)
     bool has_alarm;
     bool is_allday;
     int play_duration_sec;      // 0=1曲 -1=設定値使用
     int play_repeat;            // -1=設定値使用
 
-    // ── 複数アラーム対応 ──
-    //   !-25,-15,-5! のように 1 イベントに最大 MAX_ALARMS_PER_EVENT 個指定可能
-    int alarm_count;                            // 有効なアラーム数 (0..MAX_ALARMS_PER_EVENT)
-    int offset_min[MAX_ALARMS_PER_EVENT];       // 各アラームのオフセット(分) ＋=前 −=後
-    time_t alarm_time[MAX_ALARMS_PER_EVENT];    // 各アラームの絶対時刻
-    bool triggered[MAX_ALARMS_PER_EVENT];       // 発火済みフラグ
+    int alarm_count;
+    int offset_min[MAX_ALARMS_PER_EVENT];
+    time_t alarm_time[MAX_ALARMS_PER_EVENT];
+    bool triggered[MAX_ALARMS_PER_EVENT];   // ホストの状態 + ローカルpending ack
 
-    // summary = text先頭（最初の\0まで）
     const char* summary() const { return text; }
-    // description = summary\0の次から
     const char* description() const { return text + strlen(text) + 1; }
 };
 
 struct ButtonArea {
     int x0, y0, x1, y1;
+};
+
+// ホストへ送る操作イベント (タッチ/スイッチ/画面遷移)
+struct UiEvent {
+    uint32_t ms;
+    char kind[8];     // "touch","btn","ui","alarm"
+    int16_t x, y;
+    char info[24];
 };
 
 //==============================================================================
@@ -115,27 +127,16 @@ enum UiState {
 };
 
 enum SettingsItem {
-    SET_SD_LOG,
-    SET_ICS_UPDATE,
-    SET_DEBUG_FETCH,
+    SET_SYNC_NOW,
+    SET_SERVER_HOST,
+    SET_SERVER_PORT,
     SET_WIFI_SSID,
     SET_WIFI_PASS,
-    SET_ICS_URL,
-    SET_ICS_USER,
-    SET_ICS_PASS,
     SET_MIDI_FILE,
-    SET_MIDI_URL,
     SET_MIDI_BAUD,
     SET_PORT,
-    SET_ALARM_OFFSET,
-    SET_TIME_FORMAT,
-    SET_TEXT_WRAP,
-    SET_ICS_POLL,
-    SET_PLAY_DURATION,
-    SET_PLAY_REPEAT,
-    SET_NTFY_TOPIC,
-    SET_NTFY_TEST,
     SET_SOUND_TEST,
+    SET_SCREENSHOT,
     SET_SAVE_EXIT,
     SET_COUNT
 };

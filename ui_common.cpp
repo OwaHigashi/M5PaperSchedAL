@@ -1,7 +1,6 @@
 #include "globals.h"
 #include "ui_colors.h"
 #include <time.h>
-#include <SD.h>
 
 void drawText(const String& s, int x, int y) {
     canvas.drawString(s, x, y);
@@ -15,41 +14,56 @@ void drawTextBold(const String& s, int x, int y, int level) {
     if (level >= 3) canvas.drawString(s, x + 1, y + 1);
 }
 
-// スクリーンショットをPGM形式でSDに保存
+// スクリーンショット: ホストへ送信 (data/screenshots/*.png)
 void saveScreenshot() {
-    waitEPDReady();
-    uint32_t bufferSize = canvas.getBufferSize();
-    uint8_t *buffer = (uint8_t *)(canvas.frameBuffer(1));
-    int width = canvas.width();
-    int height = canvas.height();
-
-    // フォルダ作成
-    if (!SD.exists("/screenshots")) SD.mkdir("/screenshots");
-
-    // 連番ファイル名
-    int idx = 1;
-    char fname[48];
-    do {
-        snprintf(fname, sizeof(fname), "/screenshots/ss%d.pgm", idx++);
-    } while (SD.exists(fname) && idx < 999);
-
-    File f = SD.open(fname, FILE_WRITE);
-    if (!f) {
-        Serial.println("Screenshot: failed to open file");
-        return;
+    if (!uploadScreenshot()) {
+        Serial.println("Screenshot: upload failed");
+        logLine("screenshot upload failed");
     }
+}
 
-    // PGMヘッダ
-    f.printf("P5 %d %d 255 ", width, height);
-
-    // 4bitグレースケール→8bitに変換して書き出し
-    for (uint32_t i = 0; i < bufferSize; i++) {
-        uint8_t byte = buffer[i];
-        f.write((uint8_t)(17 * (15 - (byte >> 4))));
-        f.write((uint8_t)(17 * (15 - (byte & 0x0F))));
+// ヘッダー右側の状態文字列:
+//   "HH:MM"  最終同期時刻   " fchNX" ホスト側ICS失敗   " !H" ホスト不達   " !W" WiFi断   " !T" 時刻未設定
+void buildStatusText(char* buf, size_t size) {
+    int spos = 0;
+    if (last_fetch > 1000000000) {
+        struct tm ft; localtime_r(&last_fetch, &ft);
+        spos += snprintf(buf + spos, size - spos, "%02d:%02d", ft.tm_hour, ft.tm_min);
+    } else {
+        spos += snprintf(buf + spos, size - spos, "--:--");
     }
-    f.close();
-    Serial.printf("Screenshot saved: %s (%dx%d)\n", fname, width, height);
+    for (int i = 0; i < 8 && spos < (int)size - 8; i++) {
+        if (src_fail_mask & (1 << i)) spos += snprintf(buf + spos, size - spos, " fch%dX", i + 1);
+    }
+    if (WiFi.status() != WL_CONNECTED) spos += snprintf(buf + spos, size - spos, " !W");
+    else if (!host_online)             spos += snprintf(buf + spos, size - spos, " !H");
+    if (!time_valid)                   spos += snprintf(buf + spos, size - spos, " !T");
+}
+
+// ホストからのメッセージ表示 (一定時間後に元画面へ)
+void showMessage(const char* text, int holdMs) {
+    canvas.fillCanvas(0);
+    canvas.setTextColor(15);
+    canvas.setTextDatum(MC_DATUM);
+    canvas.setTextSize(32);
+    drawTextBold("ホストからのメッセージ", 270, 120, 2);
+    canvas.setTextSize(30);
+    String t = removeUnsupportedChars(text);
+    int y = 220;
+    while (t.length() > 0 && y < 850) {
+        String line = utf8Substring(t, 32);
+        if (line.length() == 0) break;
+        drawTextBold(line, 270, y, 2);
+        t = t.substring(line.length());
+        y += 40;
+    }
+    canvas.setTextDatum(TL_DATUM);
+    canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+    unsigned long t0 = millis();
+    while (millis() - t0 < (unsigned long)holdMs) { delay(50); }
+    if (ui_state == UI_LIST) drawList();
+    else if (ui_state == UI_DETAIL) drawDetail(selected_event);
+    else if (ui_state == UI_SETTINGS) drawSettings();
 }
 
 String formatTime(int hour, int minute) {
@@ -86,29 +100,9 @@ void partialRefreshHeader() {
     canvas.drawString(buf, 10, 8);
     canvas.drawString(buf, 11, 8);
 
-    // 最終更新時刻 + URL毎のfetch状態 + WiFi/SD (drawListと揃える)
     canvas.setTextSize(22);
     char statusBuf[96];
-    int spos = 0;
-    if (last_fetch > 1000000000) {
-        struct tm ft; localtime_r(&last_fetch, &ft);
-        spos += snprintf(statusBuf + spos, sizeof(statusBuf) - spos,
-                         "%02d:%02d", ft.tm_hour, ft.tm_min);
-    } else {
-        spos += snprintf(statusBuf + spos, sizeof(statusBuf) - spos, "--:--");
-    }
-    for (int i = 0; i < fetch_url_count && spos < (int)sizeof(statusBuf) - 8; i++) {
-        if (fetch_url_status[i] == 2) {
-            spos += snprintf(statusBuf + spos, sizeof(statusBuf) - spos,
-                             " fch%dX", i + 1);
-        }
-    }
-    if (WiFi.status() != WL_CONNECTED) {
-        spos += snprintf(statusBuf + spos, sizeof(statusBuf) - spos, " !W");
-    }
-    if (!sd_healthy) {
-        spos += snprintf(statusBuf + spos, sizeof(statusBuf) - spos, " !S");
-    }
+    buildStatusText(statusBuf, sizeof(statusBuf));
     canvas.setTextColor(COL_HEADER_TEXT);
     canvas.drawString(statusBuf, 260, 10);
 

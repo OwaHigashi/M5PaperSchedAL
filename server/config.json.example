@@ -1,0 +1,37 @@
+{
+  "listen": "0.0.0.0",
+  "port": 8765,
+  "api_token": "",
+  "tz": "Asia/Tokyo",
+  "tz_posix": "JST-9",
+
+  "ics_urls": [
+    {"url": "https://example.com/calendar.ics"}
+  ],
+  "ics_poll_sec": 60,
+  "window_past_days": 1,
+  "window_future_days": 60,
+  "max_events": 299,
+  "max_desc_bytes": 3500,
+
+  "alarm_offset_default": 10,
+  "play_duration": 0,
+  "play_repeat": 1,
+  "midi_default": "alarm.mid",
+  "midi_url": "https://www.e-west.info/midialarm/",
+
+  "ntfy_server": "https://ntfy.sh",
+  "ntfy_topic": "",
+  "ntfy_on_alarm": true,
+  "ntfy_on_device_offline": true,
+  "ntfy_on_device_reboot": true,
+
+  "device": {
+    "heartbeat_sec": 5,
+    "offline_after_sec": 60,
+    "full_sync_sec": 600,
+    "time_24h": true,
+    "text_wrap": false,
+    "max_skew_sec": 2
+  }
+}
