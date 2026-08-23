@@ -91,7 +91,7 @@ def default_config_path(fallback):
 class Config:
     def __init__(self, path):
         self.path = os.path.abspath(path)
-        self.base_dir = os.path.dirname(os.path.abspath(__file__ + "/../.."))  # server/
+        self.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # server/
         self.system_dir = find_system_dir()
         self.reload()
 
