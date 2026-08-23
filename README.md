@@ -99,6 +99,19 @@ journalctl -u m5sched -f
 | `ca_file` / `ics_verify_tls` | | 証明書チェーンが不完全なサーバ用 (例: `certs/ca-bundle.pem`) |
 | `api_token` | "" | 設定すると端末は `X-Token` ヘッダを要求される |
 
+### 設定ディレクトリ `/etc/m5sched` (または `/etc/m5shed`)
+
+旧 SD カードの内容 (`config.json`, `fonts/`, `midi/`) をそのまま置くと、サーバはその `config.json` を優先して読み、
+`midi/` の MIDI を端末へ配信します。端末側は `tools/make_data.sh` が同ディレクトリから `data/` を生成して
+フラッシュします。旧 `max_events / max_desc_bytes / min_free_heap / ics_poll_min` は ESP32 のメモリ妥協だったため無視されます。
+
+### メモリリーク監視
+
+ハートビートの `heap / maxblock / psram` をホストが時系列保持し、ダッシュボードにグラフ・傾き (KB/h)・
+起動後変化・予防再起動までの予測を表示します (`data/log/mem.csv` に 1 分毎)。しきい値は `memory.*`:
+heap < 80KB / maxBlock < 48KB / 減少 2KB/h 超 → 警告 (ntfy)、heap < 60KB or maxBlock < 36KB → 鳴動中でなく
+次アラームまで 15 分以上あるときに予防再起動コマンド。設計の詳細は `server/DESIGN.md`。
+
 ### データ
 
 ```

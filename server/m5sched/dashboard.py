@@ -44,6 +44,10 @@ DASHBOARD_HTML = r"""<!doctype html>
   <div style="margin-top:8px"><button onclick="fetch('/api/v1/refresh',{method:'POST'}).then(load)">ICS再取得</button>
   <a href="/log/alarm" target="_blank"><button>アラームログ</button></a>
   <a href="/log/device" target="_blank"><button>端末ログ</button></a></div>
+  <h2 style="margin-top:10px">メモリ監視 <span id="memlvl"></span></h2>
+  <div class="kv" id="mem"></div>
+  <svg id="memchart" width="100%" height="120" viewBox="0 0 600 120" preserveAspectRatio="none" style="background:#fafafa;border:1px solid #eee;margin-top:6px"></svg>
+  <div style="font-size:11px;color:#666">黒: heap / 灰: maxBlock（直近24h, 5分刻み）<a href="/log/mem" target="_blank">CSV</a></div>
   <h2 style="margin-top:10px">異常検知</h2><pre id="anom"></pre>
   <h2 style="margin-top:10px">端末の操作イベント</h2><pre id="ui"></pre>
  </div>
@@ -78,6 +82,24 @@ async function load(){
   最終取得:`${f(s.last_fetch)} (${ago(s.last_fetch)})`, 最終変更:f(s.last_change),
   次アラーム:f(s.next_alarm), ntfy:esc(s.config.ntfy_topic||'(off)'),
   ...Object.fromEntries(s.sources.map(x=>[`ICS${x.idx+1}`,`${x.ok===false?'<span class=off>NG</span>':'<span class=on>OK</span>'} ${x.bytes}B ${esc(x.error)} <small>${esc(x.url).slice(0,70)}</small>`]))
+ });
+ const m=s.memory||{}, st=m.stats||{};
+ $('#memlvl').innerHTML=m.level==='ok'?'<span class=on>OK</span>':m.level==='unknown'?'-':`<span class=off>${m.level.toUpperCase()}</span>`;
+ kv($('#mem'),{
+  現在:`heap ${(st.heap/1024).toFixed(1)}KB / maxBlock ${(st.maxblock/1024).toFixed(1)}KB / psram ${(st.psram/1024).toFixed(0)}KB`,
+  最小値:`heap ${(st.min_heap/1024).toFixed(1)}KB / maxBlock ${(st.min_maxblock/1024).toFixed(1)}KB (今回起動以降)`,
+  傾き:`heap ${st.slope_heap_kb_h??'-'} KB/h, maxBlock ${st.slope_maxblock_kb_h??'-'} KB/h (${st.window_h}h窓, ${st.samples}点)`,
+  起動後変化:st.since_boot?`heap ${(st.since_boot.heap/1024).toFixed(1)}KB / maxBlock ${(st.since_boot.maxblock/1024).toFixed(1)}KB (${st.since_boot.hours}h)`:'(起動5分後に基準化)',
+  予測:st.hours_to_reboot_floor!=null?`このペースなら約 ${st.hours_to_reboot_floor} h で予防再起動しきい値`:'減少傾向なし',
+  警告:(m.reasons||[]).join(' / ')||'なし',
+ });
+ fetch('/api/v1/memory').then(r=>r.json()).then(mm=>{
+  const ser=mm.series||[]; const svg=$('#memchart'); if(ser.length<2){svg.innerHTML='';return;}
+  const t0=ser[0][0], t1=ser[ser.length-1][0]||t0+1; const vals=ser.flatMap(p=>[p[1],p[2]]);
+  const lo=Math.min(...vals)*0.95, hi=Math.max(...vals)*1.02;
+  const X=t=>600*(t-t0)/Math.max(1,t1-t0), Y=v=>120-120*(v-lo)/Math.max(1,hi-lo);
+  const path=(i,c)=>`<polyline fill="none" stroke="${c}" stroke-width="1.5" points="${ser.map(p=>X(p[0]).toFixed(1)+','+Y(p[i]).toFixed(1)).join(' ')}"/>`;
+  svg.innerHTML=path(1,'#222')+path(2,'#999')+`<text x="4" y="12" font-size="11" fill="#444">${(hi/1024).toFixed(0)}KB</text><text x="4" y="116" font-size="11" fill="#444">${(lo/1024).toFixed(0)}KB</text>`;
  });
  $('#anom').textContent=d.anomalies.slice().reverse().map(a=>`${f(a.ts)} ${a.text}`).join('\n')||'(なし)';
  $('#ui').textContent=d.ui_events.slice().reverse().slice(0,30).map(e=>`${f(e.host_ts,false)} ${JSON.stringify(e)}`).join('\n')||'(なし)';

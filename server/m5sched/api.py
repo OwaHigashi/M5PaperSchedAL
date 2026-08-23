@@ -144,6 +144,8 @@ def make_handler(sched, cfg, midi_cache):
                     return self._json(sched.status())
                 if path == "/api/v1/list":
                     return self._json({"rev": sched.rev, "events": sched.events_for_dashboard()})
+                if path == "/api/v1/memory":
+                    return self._json({"assess": sched.mem.assess(), "series": sched.mem.series()})
                 if path == "/api/v1/midi":
                     return self._json({"files": midi_cache.list()})
                 if path == "/api/v1/time":
@@ -165,8 +167,9 @@ def make_handler(sched, cfg, midi_cache):
                         return self._json({"error": "not found"}, 404)
                     with open(p, "rb") as f:
                         return self._send(200, f.read(), "image/png")
-                if path in ("/log/alarm", "/log/device"):
-                    p = sched.log_path if path.endswith("alarm") else sched.device_log_path
+                if path in ("/log/alarm", "/log/device", "/log/mem"):
+                    p = {"alarm": sched.log_path, "device": sched.device_log_path,
+                         "mem": sched.mem.csv_path}[path.rsplit("/", 1)[1]]
                     data = b""
                     if os.path.isfile(p):
                         with open(p, "rb") as f:

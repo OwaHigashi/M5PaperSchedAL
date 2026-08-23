@@ -53,6 +53,18 @@ DEFAULTS = {
         "allowed_fw": "",            # if set, heartbeats from other versions are flagged
     },
 
+    # ---- memory-leak monitoring (values from every heartbeat) ----
+    "memory": {
+        "window_sec": 21600,          # slope regression window (6 h)
+        "warn_heap_kb": 80,
+        "warn_maxblock_kb": 48,
+        "warn_slope_kb_per_h": 2,     # sustained decline faster than this → warning
+        "reboot_heap_kb": 60,         # below this → preventive reboot (when safe)
+        "reboot_maxblock_kb": 36,
+        "reboot_guard_sec": 900,      # never reboot within 15 min of an alarm
+        "ntfy": True,
+    },
+
     "data_dir": "data",
     "cache_dir": "cache",
 }
@@ -100,6 +112,9 @@ class Config:
         if os.path.exists(self.path):
             with open(self.path, "r", encoding="utf-8") as f:
                 raw = json.load(f)
+        # keys from the old on-device config that encoded ESP32 memory/SSL compromises — ignored
+        for k in ("max_events", "max_desc_bytes", "min_free_heap", "ics_poll_min", "sd_log_enabled"):
+            raw.pop(k, None)
         self.d = _merge(DEFAULTS, raw)
         self._apply_legacy(raw)
         self.data_dir = self._abs(self.d["data_dir"])
@@ -121,13 +136,12 @@ class Config:
             d["alarm_offset_default"] = int(raw["alarm_offset"])
         if isinstance(raw.get("midi_file"), str) and "midi_default" not in raw:
             d["midi_default"] = os.path.basename(raw["midi_file"]) or d["midi_default"]
-        if "ics_poll_min" in raw and "ics_poll_sec" not in raw:
-            d["ics_poll_sec"] = max(10, int(raw["ics_poll_min"]) * 60)
         for k in ("time_24h", "text_wrap"):
             if k in raw and k not in (raw.get("device") or {}):
                 d["device"][k] = bool(raw[k])
-        if "max_events" in raw:
-            d["max_events"] = min(int(raw["max_events"]), 299)
+        # legacy max_events / max_desc_bytes / min_free_heap were ESP32 memory compromises;
+        # deliberately ignored — the host-side defaults (299 / 3500) apply unless set explicitly
+        # via the new keys.
         # server-side paths live next to the package unless given absolute
         if self.system_dir:
             d.setdefault("midi_dir", os.path.join(self.system_dir, "midi"))

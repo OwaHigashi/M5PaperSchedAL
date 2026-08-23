@@ -19,6 +19,7 @@ import time
 from zoneinfo import ZoneInfo
 
 from . import ics as icsmod
+from .memmon import MemMonitor
 
 log = logging.getLogger("core")
 
@@ -124,6 +125,7 @@ class Scheduler:
                         for i, s in enumerate(cfg["ics_urls"])]
         self.first_load = True
         self.device = DeviceState()
+        self.mem = MemMonitor(cfg, cfg.data_dir)
         self.state_path = os.path.join(cfg.data_dir, "state.json")
         self.events_path = os.path.join(cfg.data_dir, "events_cache.json")
         self.loaded = False          # True once a table (fresh or cached) is available
@@ -376,6 +378,7 @@ class Scheduler:
                 if self.cfg["ntfy_on_device_reboot"]:
                     self.notifier.send("M5Paper rebooted", f"reason={body.get('reset')}", tags="warning",
                                        priority="default")
+            rebooted = bool(dev.uptime_sec and up < dev.uptime_sec - 5) or dev.uptime_sec == 0
             dev.uptime_sec = up
             seq = int(body.get("seq", -1) or -1)
             if dev.last_seq >= 0 and seq > dev.last_seq + 1 and up >= dev.uptime_sec:
@@ -403,6 +406,11 @@ class Scheduler:
         logs = body.get("log") or []
         if logs:
             self.device_log(logs[:100])
+        try:
+            self.mem.add(now, up, body.get("heap"), body.get("maxblock"), body.get("psram"), rebooted=rebooted)
+            self._memory_policy(now)
+        except Exception as e:  # noqa: BLE001
+            log.exception("memory monitor: %s", e)
         if came_online:
             dev.anomaly("back online")
             self.alog("device ONLINE again")
@@ -421,6 +429,28 @@ class Scheduler:
                 "next_alarm": self._next_alarm_ts(now),
             }
         return resp
+
+    def _memory_policy(self, now):
+        """Warn once per boot on leak symptoms; request a preventive reboot when critical and safe."""
+        a = self.mem.assess()
+        mcfg = self.cfg.get("memory") or {}
+        if a["level"] in ("warn", "critical"):
+            for r in a["reasons"]:
+                key = r.split(" ")[0] + ("-falling" if "falling" in r else "-low")
+                if self.mem.new_warning(key):
+                    self.device.anomaly(f"memory: {r}")
+                    self.alog("MEMORY    %s (heap=%d maxBlock=%d)", r, a["stats"]["heap"], a["stats"]["maxblock"])
+                    if mcfg.get("ntfy", True):
+                        self.notifier.send("M5Paper memory", r, tags="warning", priority="default")
+        with self.lock:
+            nxt = self._next_alarm_ts(now)
+        ok, why = self.mem.should_reboot(now, self.device.playing, nxt)
+        if ok:
+            self.alog("MEMORY    preventive reboot requested: %s", why)
+            self.device.anomaly(f"preventive reboot: {why}")
+            self.device.enqueue({"cmd": "reboot"}, source="memory-monitor")
+            if mcfg.get("ntfy", True):
+                self.notifier.send("M5Paper 予防再起動", why, tags="warning", priority="default")
 
     def _next_alarm_ts(self, now):
         best = None
@@ -506,6 +536,7 @@ class Scheduler:
                             for s in self.sources],
                 "next_alarm": self._next_alarm_ts(now),
                 "device": self.device.snapshot(),
+                "memory": self.mem.assess(),
                 "window": {"past_days": self.cfg["window_past_days"],
                            "future_days": self.cfg["window_future_days"]},
                 "config": {k: self.cfg[k] for k in ("ics_poll_sec", "alarm_offset_default",
