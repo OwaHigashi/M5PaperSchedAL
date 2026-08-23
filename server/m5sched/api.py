@@ -42,14 +42,15 @@ class MidiCache:
         self.cfg = cfg
         self.dir = os.path.join(cfg.cache_dir, "midi")
         self.local_dir = os.path.join(cfg.base_dir, "midi")   # server/midi/*.mid shipped with the repo
+        self.system_dir = cfg.get("midi_dir") or ""            # /etc/m5sched/midi (old SD card midi/)
         self.lock = threading.Lock()
 
     def get(self, name: str) -> bytes | None:
         if not SAFE_NAME.match(name) or not name.lower().endswith((".mid", ".midi")):
             return None
-        for d in (self.local_dir, self.dir):
-            p = os.path.join(d, name)
-            if os.path.isfile(p):
+        for d in (self.system_dir, self.local_dir, self.dir):
+            p = os.path.join(d, name) if d else ""
+            if p and os.path.isfile(p):
                 with open(p, "rb") as f:
                     return f.read()
         base = self.cfg.get("midi_url") or ""
@@ -74,8 +75,8 @@ class MidiCache:
 
     def list(self):
         names = set()
-        for d in (self.local_dir, self.dir):
-            if os.path.isdir(d):
+        for d in (self.system_dir, self.local_dir, self.dir):
+            if d and os.path.isdir(d):
                 names.update(n for n in os.listdir(d) if n.lower().endswith((".mid", ".midi")))
         return sorted(names)
 

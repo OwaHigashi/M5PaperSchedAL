@@ -68,10 +68,31 @@ def _merge(base, override):
     return out
 
 
+# Directory holding the old SD-card contents (config.json, fonts/, midi/).
+# /etc/m5sched is preferred; /etc/m5shed is accepted as an alias.
+SYSTEM_DIRS = ["/etc/m5sched", "/etc/m5shed"]
+
+
+def find_system_dir():
+    for d in SYSTEM_DIRS:
+        if os.path.isdir(d):
+            return d
+    return None
+
+
+def default_config_path(fallback):
+    """/etc/m5sched/config.json wins over server/config.json when it exists."""
+    d = find_system_dir()
+    if d and os.path.isfile(os.path.join(d, "config.json")):
+        return os.path.join(d, "config.json")
+    return fallback
+
+
 class Config:
     def __init__(self, path):
         self.path = os.path.abspath(path)
-        self.base_dir = os.path.dirname(self.path)
+        self.base_dir = os.path.dirname(os.path.abspath(__file__ + "/../.."))  # server/
+        self.system_dir = find_system_dir()
         self.reload()
 
     def reload(self):
@@ -80,18 +101,36 @@ class Config:
             with open(self.path, "r", encoding="utf-8") as f:
                 raw = json.load(f)
         self.d = _merge(DEFAULTS, raw)
-        # allow the legacy comma-separated "ics_url" form
-        if isinstance(self.d.get("ics_url"), str) and not self.d["ics_urls"]:
-            self.d["ics_urls"] = [
-                {"url": u.strip(), "user": self.d.get("ics_user", ""), "pass": self.d.get("ics_pass", "")}
-                for u in self.d["ics_url"].split(",") if u.strip()
-            ]
+        self._apply_legacy(raw)
         self.data_dir = self._abs(self.d["data_dir"])
         self.cache_dir = self._abs(self.d["cache_dir"])
         for sub in ("", "log", "screenshots"):
             os.makedirs(os.path.join(self.data_dir, sub), exist_ok=True)
         os.makedirs(os.path.join(self.cache_dir, "midi"), exist_ok=True)
         os.makedirs(os.path.join(self.cache_dir, "ics"), exist_ok=True)
+
+    def _apply_legacy(self, raw):
+        """Accept the old on-device SD config.json keys as-is."""
+        d = self.d
+        if isinstance(raw.get("ics_url"), str) and not raw.get("ics_urls"):
+            d["ics_urls"] = [
+                {"url": u.strip(), "user": raw.get("ics_user", ""), "pass": raw.get("ics_pass", "")}
+                for u in raw["ics_url"].split(",") if u.strip()
+            ]
+        if "alarm_offset" in raw:
+            d["alarm_offset_default"] = int(raw["alarm_offset"])
+        if isinstance(raw.get("midi_file"), str) and "midi_default" not in raw:
+            d["midi_default"] = os.path.basename(raw["midi_file"]) or d["midi_default"]
+        if "ics_poll_min" in raw and "ics_poll_sec" not in raw:
+            d["ics_poll_sec"] = max(10, int(raw["ics_poll_min"]) * 60)
+        for k in ("time_24h", "text_wrap"):
+            if k in raw and k not in (raw.get("device") or {}):
+                d["device"][k] = bool(raw[k])
+        if "max_events" in raw:
+            d["max_events"] = min(int(raw["max_events"]), 299)
+        # server-side paths live next to the package unless given absolute
+        if self.system_dir:
+            d.setdefault("midi_dir", os.path.join(self.system_dir, "midi"))
 
     def _abs(self, p):
         return p if os.path.isabs(p) else os.path.join(self.base_dir, p)

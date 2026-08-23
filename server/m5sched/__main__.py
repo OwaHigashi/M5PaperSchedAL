@@ -12,10 +12,13 @@ from .notify import Notifier
 
 
 def main():
-    path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(__file__), "..", "config.json")
+    from .config import default_config_path
+    path = sys.argv[1] if len(sys.argv) > 1 else default_config_path(
+        os.path.join(os.path.dirname(__file__), "..", "config.json"))
     logging.basicConfig(level=os.environ.get("M5SCHED_LOG", "INFO"),
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     cfg = Config(path)
+    logging.info("config: %s (system dir: %s)", cfg.path, cfg.system_dir)
     if not cfg["ics_urls"]:
         logging.warning("no ics_urls configured in %s", cfg.path)
     notifier = Notifier(cfg)
