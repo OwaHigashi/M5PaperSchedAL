@@ -79,6 +79,7 @@ void setup() {
     pinMode(SW_L_PIN, INPUT_PULLUP);
     pinMode(SW_R_PIN, INPUT_PULLUP);
     pinMode(SW_P_PIN, INPUT_PULLUP);
+    initSwitchISR();   // 押下を割り込みでラッチ (ブロッキング処理中の取りこぼし防止)
 
     // 内蔵フラッシュ
     initFS();
@@ -178,10 +179,7 @@ void loop() {
     pollSerialCommands();
     updateMidiPlayback();
 
-    if (millis() - last_switch_check > 50) {
-        last_switch_check = millis();
-        checkSwitches();
-    }
+    checkSwitches();   // 割り込みでラッチ済みの押下を処理 (毎ループ)
 
     // タッチ処理
     static bool was_touched = false;

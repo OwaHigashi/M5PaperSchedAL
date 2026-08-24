@@ -3,19 +3,40 @@
 
 //==============================================================================
 // スイッチ処理
+//   ポーリングだとハートビートHTTPやEPD描画のブロック中(数百ms)の押下を
+//   取りこぼす → GPIO割り込みで押下をカウントし、ループ復帰後に必ず処理する
 //==============================================================================
+static volatile uint8_t sw_press_cnt[3] = {0, 0, 0};       // L, R, P
+static volatile uint32_t sw_last_edge_ms[3] = {0, 0, 0};
+static const uint32_t SW_DEBOUNCE_MS = 60;
+
+static void IRAM_ATTR swISR(void* arg) {
+    int idx = (int)(intptr_t)arg;
+    uint32_t now = millis();
+    if (now - sw_last_edge_ms[idx] < SW_DEBOUNCE_MS) return;   // チャタリング除去
+    sw_last_edge_ms[idx] = now;
+    if (sw_press_cnt[idx] < 8) sw_press_cnt[idx]++;            // 溜めすぎ防止
+}
+
+void initSwitchISR() {
+    attachInterruptArg(SW_L_PIN, swISR, (void*)0, FALLING);
+    attachInterruptArg(SW_R_PIN, swISR, (void*)1, FALLING);
+    attachInterruptArg(SW_P_PIN, swISR, (void*)2, FALLING);
+}
+
 void checkSwitches() {
-    bool sw_l = digitalRead(SW_L_PIN);
-    bool sw_r = digitalRead(SW_R_PIN);
-    bool sw_p = digitalRead(SW_P_PIN);
-
-    if (!sw_l && sw_l_prev) { Serial.println("SW_L pressed"); last_interaction_ms = millis(); uiEventPush("btn", 0, 0, "L"); handleSwitch('L'); }
-    if (!sw_r && sw_r_prev) { Serial.println("SW_R pressed"); last_interaction_ms = millis(); uiEventPush("btn", 0, 0, "R"); handleSwitch('R'); }
-    if (!sw_p && sw_p_prev) { Serial.println("SW_P pressed"); last_interaction_ms = millis(); uiEventPush("btn", 0, 0, "P"); handleSwitch('P'); }
-
-    sw_l_prev = sw_l;
-    sw_r_prev = sw_r;
-    sw_p_prev = sw_p;
+    static const char names[3] = {'L', 'R', 'P'};
+    for (int i = 0; i < 3; i++) {
+        while (sw_press_cnt[i] > 0) {
+            noInterrupts(); sw_press_cnt[i]--; interrupts();
+            char sw = names[i];
+            Serial.printf("SW_%c pressed\n", sw);
+            last_interaction_ms = millis();
+            char info[2] = {sw, '\0'};
+            uiEventPush("btn", 0, 0, info);
+            handleSwitch(sw);
+        }
+    }
 }
 
 void handleSwitch(char sw) {

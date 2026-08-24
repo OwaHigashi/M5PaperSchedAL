@@ -97,7 +97,6 @@ extern unsigned long hb_interval_ms;
 extern int  full_sync_sec;
 extern time_t host_next_alarm;
 extern bool reboot_pending;
-extern unsigned long last_switch_check;
 extern unsigned long last_interaction_ms;
 extern time_t last_alarm_debug;
 extern time_t last_auto_refresh;
@@ -121,7 +120,6 @@ extern int displayed_next_event_idx;
 extern int partial_refresh_count;
 
 // スイッチ状態
-extern bool sw_l_prev, sw_r_prev, sw_p_prev;
 
 //==============================================================================
 // 関数プロトタイプ
@@ -226,6 +224,7 @@ int  getKeyboardHit(int tx, int ty);
 void processKeyboardHit(int hit);
 
 // input_handler.cpp
+void initSwitchISR();
 void checkSwitches();
 void handleSwitch(char sw);
 void handleTouch(int tx, int ty);

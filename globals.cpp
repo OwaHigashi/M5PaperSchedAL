@@ -64,7 +64,6 @@ bool reboot_pending = false;
 DisplayRow last_pushed[MAX_DISPLAY_ROWS];
 int last_pushed_count = 0;
 bool row_changed[MAX_DISPLAY_ROWS];
-unsigned long last_switch_check = 0;
 unsigned long last_interaction_ms = 0;
 time_t last_alarm_debug = 0;
 time_t last_auto_refresh = 0;
@@ -84,9 +83,6 @@ unsigned long last_heartbeat_ms = 0;
 int displayed_next_event_idx = -1;
 int partial_refresh_count = 0;
 
-bool sw_l_prev = true;
-bool sw_r_prev = true;
-bool sw_p_prev = true;
 
 //==============================================================================
 // 表示内容スナップショット（画面イメージベース比較）
