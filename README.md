@@ -65,23 +65,34 @@ v100 では役割を分離しました。
 
 ## ホスト側セットアップ (Ubuntu)
 
+FHS に沿って 3 箇所に分かれる (`server/` はリポジトリ内では `/opt/m5sched` へのシンボリックリンク):
+
+```
+/opt/m5sched/          プログラム (m5sched/ パッケージ, .venv, requirements.txt, 同梱 midi/)
+/etc/m5sched/          設定 (config.json, certs/, fonts/, midi/) — config.json は ICS の private URL を含むので 600
+/var/lib/m5sched/      可変データ (data/: state, events_cache, log/, screenshots/  cache/: ics, midi)
+```
+
 ```bash
-cd server
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-cp config.json.example config.json   # ICS URL / ntfy などを記入
-.venv/bin/python -m m5sched config.json        # 手動起動 (http://localhost:8765/)
+sudo mkdir -p /opt/m5sched /etc/m5sched /var/lib/m5sched && sudo chown $USER /opt/m5sched /etc/m5sched /var/lib/m5sched
+rsync -a server/ /opt/m5sched/ --exclude .venv
+python3 -m venv /opt/m5sched/.venv && /opt/m5sched/.venv/bin/pip install -r /opt/m5sched/requirements.txt
+cp server/config.json.example /etc/m5sched/config.json   # ICS URL / ntfy などを記入し、
+#   "data_dir": "/var/lib/m5sched/data", "cache_dir": "/var/lib/m5sched/cache",
+#   "ca_file": "/etc/m5sched/certs/ca-bundle.pem", "midi_dir": "/etc/m5sched/midi" を絶対パスで指定
+/opt/m5sched/.venv/bin/python -m m5sched              # 手動起動 (http://localhost:8765/)
 ```
 
 systemd (このホストでは導入済み):
 
 ```bash
-sudo cp server/m5sched.service /etc/systemd/system/
+sudo cp /opt/m5sched/m5sched.service /etc/systemd/system/
 sudo systemctl enable --now m5sched
 sudo ufw allow from 10.1.0.0/16 to any port 8765 proto tcp   # LAN のみ許可
 journalctl -u m5sched -f
 ```
 
-### server/config.json
+### /etc/m5sched/config.json
 
 | キー | 既定 | 説明 |
 |---|---|---|
@@ -96,31 +107,32 @@ journalctl -u m5sched -f
 | `device.full_sync_sec` | 600 | rev が同じでも最低この間隔で全件再取得 |
 | `device.time_24h` `device.text_wrap` | | 端末の表示設定 (ホストから配布) |
 | `device.max_skew_sec` | 2 | 端末がこの秒数以上ずれたら時刻補正 |
-| `ca_file` / `ics_verify_tls` | | 証明書チェーンが不完全なサーバ用 (例: `certs/ca-bundle.pem`) |
+| `ca_file` / `ics_verify_tls` | | 証明書チェーンが不完全なサーバ用 (例: `/etc/m5sched/certs/ca-bundle.pem`) |
 | `api_token` | "" | 設定すると端末は `X-Token` ヘッダを要求される |
 
-### 設定ディレクトリ `/etc/m5sched` (または `/etc/m5shed`)
+### 設定ディレクトリ `/etc/m5sched`
 
-旧 SD カードの内容 (`config.json`, `fonts/`, `midi/`) をそのまま置くと、サーバはその `config.json` を優先して読み、
-`midi/` の MIDI を端末へ配信します。端末側は `tools/make_data.sh` が同ディレクトリから `data/` を生成して
+サーバは `/etc/m5sched/config.json` を読み (旧 SD カード形式の `config.json` もそのまま受け付ける)、
+`midi/` の MIDI を端末へ配信します。旧 SD の `config.json` は `config.json.sd-legacy` として保存してある。端末側は `tools/make_data.sh` が同ディレクトリから `data/` を生成して
 フラッシュします。旧 `max_events / max_desc_bytes / min_free_heap / ics_poll_min` は ESP32 のメモリ妥協だったため無視されます。
 
 ### メモリリーク監視
 
 ハートビートの `heap / maxblock / psram` をホストが時系列保持し、ダッシュボードにグラフ・傾き (KB/h)・
-起動後変化・予防再起動までの予測を表示します (`data/log/mem.csv` に 1 分毎)。しきい値は `memory.*`:
+起動後変化・予防再起動までの予測を表示します (`/var/lib/m5sched/data/log/mem.csv` に 1 分毎)。しきい値は `memory.*`:
 heap < 80KB / maxBlock < 48KB / 減少 2KB/h 超 → 警告 (ntfy)、heap < 60KB or maxBlock < 36KB → 鳴動中でなく
 次アラームまで 15 分以上あるときに予防再起動コマンド。設計の詳細は `server/DESIGN.md`。
 
 ### データ
 
 ```
-server/data/state.json          アラーム「鳴動済み」状態 (永続)
-server/data/events_cache.json   最後のテーブル (再起動・ICS 障害時もこれで動く)
-server/data/log/alarm.log       due / ACK / MISSED / 端末 online-offline
-server/data/log/device.log      端末から転送されたログ (旧 SD ログの代替)
-server/data/screenshots/        端末スクリーンショット (PNG)
-server/cache/ics/, cache/midi/  ICS 直近成功コピー、MIDI キャッシュ
+/var/lib/m5sched/data/state.json          アラーム「鳴動済み」状態 (永続)
+/var/lib/m5sched/data/events_cache.json   最後のテーブル (再起動・ICS 障害時もこれで動く)
+/var/lib/m5sched/data/log/alarm.log       due / ACK / MISSED / 端末 online-offline
+/var/lib/m5sched/data/log/device.log      端末から転送されたログ (旧 SD ログの代替)
+/var/lib/m5sched/data/screenshots/        端末スクリーンショット (PNG)
+/var/lib/m5sched/cache/ics/, cache/midi/  ICS 直近成功コピー、MIDI キャッシュ
+/var/lib/m5sched/sd-legacy/               旧 SD カードにあった log/ screenshots/ cache/ (退避)
 ```
 
 ### ダッシュボード `http://<host>:8765/`

@@ -3,7 +3,7 @@
 # (config.json, fonts/ipaexg.ttf, midi/*.mid) and flash it.   Usage: tools/make_data.sh [--no-flash]
 set -e
 cd "$(dirname "$0")/.."
-SYS=""; for d in /etc/m5sched /etc/m5shed; do [ -d "$d" ] && { SYS=$d; break; }; done
+SYS=""; for d in /etc/m5sched; do [ -d "$d" ] && { SYS=$d; break; }; done
 [ -n "$SYS" ] || { echo "no /etc/m5sched directory"; exit 1; }
 mkdir -p data/fonts data/midi
 [ -f "$SYS/fonts/ipaexg.ttf" ] && cp "$SYS/fonts/ipaexg.ttf" data/fonts/
