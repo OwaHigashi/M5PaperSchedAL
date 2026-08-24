@@ -70,6 +70,7 @@ time_t last_alarm_debug = 0;
 time_t last_auto_refresh = 0;
 time_t last_gc16_cleanup = 0;
 bool time_valid = false;
+bool events_cache_dirty = false;   // triggered変化後にキャッシュ再保存が必要
 
 SimpleMIDIPlayer midi;
 bool midi_playing = false;

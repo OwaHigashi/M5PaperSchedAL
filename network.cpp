@@ -1,11 +1,27 @@
 #include "globals.h"
 #include <esp_task_wdt.h>
+#include <esp_wifi.h>
 
 //==============================================================================
 // WiFi
 //==============================================================================
+// modem sleep を確実にOFFにする。WiFi.setSleep(false) はドライバ再初期化や
+// 自動再接続の経路で適用漏れの余地があるため、IDFレイヤにも直接指定する。
+static void applyWifiNoSleep() {
+    WiFi.setSleep(false);
+    esp_wifi_set_ps(WIFI_PS_NONE);
+}
+
 bool connectWiFi() {
     if (strlen(config.wifi_ssid) == 0) return false;
+
+    // setAutoReconnect による再アソシエート後にも PS_NONE を適用し直す
+    static bool ev_registered = false;
+    if (!ev_registered) {
+        ev_registered = true;
+        WiFi.onEvent([](WiFiEvent_t, WiFiEventInfo_t) { applyWifiNoSleep(); },
+                     ARDUINO_EVENT_WIFI_STA_CONNECTED);
+    }
 
     for (int attempt = 1; attempt <= 3; attempt++) {
         WiFi.disconnect(true);
@@ -17,7 +33,7 @@ bool connectWiFi() {
             delay(100);
         }
         WiFi.mode(WIFI_STA);
-        WiFi.setSleep(false);          // レイテンシ優先 (5秒毎のハートビートが安定する)
+        applyWifiNoSleep();            // レイテンシ優先 (5秒毎のハートビートが安定する)
         WiFi.setAutoReconnect(true);
         WiFi.begin(config.wifi_ssid, config.wifi_pass);
 
@@ -30,8 +46,11 @@ bool connectWiFi() {
         }
         Serial.println();
         if (WiFi.status() == WL_CONNECTED) {
-            Serial.printf("WiFi connected: %s RSSI:%d (heap: %d)\n",
-                          WiFi.localIP().toString().c_str(), WiFi.RSSI(), ESP.getFreeHeap());
+            applyWifiNoSleep();
+            Serial.printf("WiFi connected: %s RSSI:%d ch:%d bssid:%s (heap: %d)\n",
+                          WiFi.localIP().toString().c_str(), WiFi.RSSI(),
+                          WiFi.channel(), WiFi.BSSIDstr().c_str(), ESP.getFreeHeap());
+            logLine("wifi up rssi=%d ch=%d bssid=%s", WiFi.RSSI(), WiFi.channel(), WiFi.BSSIDstr().c_str());
             return true;
         }
         Serial.printf("WiFi attempt %d failed (status: %d)\n", attempt, WiFi.status());

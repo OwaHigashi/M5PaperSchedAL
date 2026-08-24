@@ -122,8 +122,52 @@ void retryPendingAcks() {
 
 //------------------------------------------------------------------------------
 // 時刻合わせ (ホスト時刻が基準。NTPは使わない)
+//   ホスト同期のたびに BM8563 RTC にも書き込み、ホスト不達のまま再起動しても
+//   RTCから時刻を復元できるようにする (rtcLoadTime)。RTCはUTCで保持しTZ非依存。
 //------------------------------------------------------------------------------
 static double max_skew_sec = 2.0;
+static unsigned long last_rtc_store_ms = 0;
+#define RTC_STORE_INTERVAL_MS (6UL * 3600UL * 1000UL)   // ドリフト抑制のため6時間毎に書き直す
+
+// UTC epoch ← 年月日時分秒 (days-from-civil。mktime/timegmのTZ依存を避ける)
+static time_t civilToEpochUTC(int y, int m, int d, int hh, int mm, int ss) {
+    y -= m <= 2;
+    int era = (y >= 0 ? y : y - 399) / 400;
+    unsigned yoe = (unsigned)(y - era * 400);
+    unsigned doy = (153U * (unsigned)(m + (m > 2 ? -3 : 9)) + 2U) / 5U + (unsigned)d - 1U;
+    unsigned doe = yoe * 365U + yoe / 4U - yoe / 100U + doy;
+    long days = (long)era * 146097L + (long)doe - 719468L;
+    return (time_t)days * 86400 + hh * 3600 + mm * 60 + ss;
+}
+
+static void rtcStoreTime() {
+    time_t now = time(nullptr);
+    struct tm g; gmtime_r(&now, &g);
+    rtc_time_t t((int8_t)g.tm_hour, (int8_t)g.tm_min, (int8_t)g.tm_sec);
+    rtc_date_t d((int8_t)g.tm_wday, (int8_t)(g.tm_mon + 1), (int8_t)g.tm_mday, (int16_t)(g.tm_year + 1900));
+    M5.RTC.setTime(&t);     // 秒レジスタ書込みでVLフラグもクリアされる
+    M5.RTC.setDate(&d);
+    last_rtc_store_ms = millis();
+}
+
+bool rtcLoadTime() {
+    if (M5.RTC.readReg(0x02) & 0x80) {          // VL: 電圧低下で時刻喪失
+        Serial.println("RTC: VL flag set - time not trusted");
+        return false;
+    }
+    rtc_time_t t; rtc_date_t d;
+    M5.RTC.getTime(&t);
+    M5.RTC.getDate(&d);
+    if (d.year < 2026 || d.year > 2099 || d.mon < 1 || d.mon > 12 || d.day < 1 || d.day > 31) return false;
+    struct timeval tv;
+    tv.tv_sec = civilToEpochUTC(d.year, d.mon, d.day, t.hour, t.min, t.sec);
+    tv.tv_usec = 0;
+    settimeofday(&tv, nullptr);
+    time_valid = true;
+    Serial.printf("TIME set from RTC: %04d-%02d-%02d %02d:%02d:%02d UTC\n",
+                  d.year, d.mon, d.day, t.hour, t.min, t.sec);
+    return true;
+}
 
 void applyTimeFromHost(double hostNow, unsigned long rttMs) {
     if (hostNow < 1600000000.0) return;
@@ -138,8 +182,11 @@ void applyTimeFromHost(double hostNow, unsigned long rttMs) {
         tv.tv_usec = (suseconds_t)((est - (double)tv.tv_sec) * 1e6);
         settimeofday(&tv, nullptr);
         time_valid = true;
+        rtcStoreTime();
         Serial.printf("TIME %s from host: skew %+.2fs rtt %lums\n", first ? "set" : "corrected", skew, rttMs);
         if (!first) logLine("time corrected skew=%+.2fs", skew);
+    } else if (millis() - last_rtc_store_ms > RTC_STORE_INTERVAL_MS) {
+        rtcStoreTime();
     }
 }
 
@@ -297,6 +344,7 @@ bool fetchAndUpdate() {
     Serial.printf("SYNC: %d -> %d events, rev=%ld, pending alarms=%d, %lums, heap:%u\n",
                   before, n, rev, pending, millis() - t0, ESP.getFreeHeap());
     logLine("sync ok ev=%d rev=%ld pend=%d %lums", n, rev, pending, millis() - t0);
+    saveEventsCache();      // ホスト不達での再起動に備えて永続化 (rev不変ならスキップ)
     return true;
 }
 
@@ -417,11 +465,12 @@ bool sendHeartbeat(bool force) {
 
     int n = snprintf(body_buf, RESP_BUF_SIZE,
         "{\"fw\":\"%s\",\"seq\":%u,\"uptime\":%lu,\"now\":%ld.%03ld,\"heap\":%u,\"maxblock\":%u,\"psram\":%u,"
-        "\"bat\":%u,\"rssi\":%d,\"ip\":\"%s\",\"ui\":\"%s\",\"rev\":%ld,\"reset\":%d,\"events\":%d,\"pending\":%d,"
+        "\"bat\":%u,\"rssi\":%d,\"bssid\":\"%s\",\"ch\":%d,\"ip\":\"%s\",\"ui\":\"%s\",\"rev\":%ld,\"reset\":%d,\"events\":%d,\"pending\":%d,"
         "\"sync_fail\":%d,\"fs_used\":%u,\"fs_total\":%u,\"temp\":%.1f,\"playing\":%s%s%s,\"pend_ack\":%d",
         BUILD_VERSION, (unsigned)hb_seq++, millis() / 1000UL, (long)tv.tv_sec, (long)(tv.tv_usec / 1000),
         ESP.getFreeHeap(), ESP.getMaxAllocHeap(), ESP.getFreePsram(),
-        (unsigned)M5.getBatteryVoltage(), WiFi.RSSI(), WiFi.localIP().toString().c_str(), uiName(),
+        (unsigned)M5.getBatteryVoltage(), WiFi.RSSI(), WiFi.BSSIDstr().c_str(), WiFi.channel(),
+        WiFi.localIP().toString().c_str(), uiName(),
         local_rev, (int)reason, event_count, pending, sync_fail_count, (unsigned)fsUsed(), (unsigned)fsTotal(), tC,
         midi_playing ? "\"" : "null", midi_playing ? (playing_alarm_id[0] ? playing_alarm_id : "test") : "",
         midi_playing ? "\"" : "", pending_n);
@@ -451,7 +500,11 @@ bool sendHeartbeat(bool force) {
     bool ok = httpPostJson("/api/v1/heartbeat", body_buf, resp_buf, RESP_BUF_SIZE, &code);
     unsigned long rtt = millis() - t0;
     if (!ok) {
-        if (host_online) { Serial.printf("HB: host unreachable (HTTP %d)\n", code); logLine("host lost code=%d", code); }
+        if (host_online) {
+            Serial.printf("HB: host unreachable (HTTP %d)\n", code);
+            // 切断原因の切り分け用: その瞬間の電波強度・WiFi状態・チャンネルを残す
+            logLine("host lost code=%d rssi=%d st=%d ch=%d", code, WiFi.RSSI(), (int)WiFi.status(), WiFi.channel());
+        }
         host_online = false;
         if (host_lost_since_ms == 0) host_lost_since_ms = millis();
         return false;

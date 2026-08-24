@@ -103,6 +103,7 @@ extern time_t last_alarm_debug;
 extern time_t last_auto_refresh;
 extern time_t last_gc16_cleanup;
 extern bool time_valid;
+extern bool events_cache_dirty;
 
 // MIDI
 extern SimpleMIDIPlayer midi;
@@ -149,6 +150,9 @@ String simplifyHtml(const String& s);
 void waitEPDReady();
 bool initFS();
 void scanMidiFiles();
+bool saveEventsCache();     // 予定テーブルをLittleFSへ保存 (rev不変かつ非dirtyならスキップ)
+int  loadEventsCache();     // 起動時: キャッシュから予定テーブルを復元。件数 or -1
+bool rtcLoadTime();         // 起動時: BM8563 RTCから時刻を復元 (VLフラグ確認付き)
 size_t fsUsed();
 size_t fsTotal();
 

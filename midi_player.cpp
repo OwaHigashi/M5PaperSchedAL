@@ -135,6 +135,7 @@ void finishAlarm() {
     if (playing_event >= 0 && playing_event < event_count) {
         if (playing_alarm_idx >= 0 && playing_alarm_idx < events[playing_event].alarm_count) {
             events[playing_event].triggered[playing_alarm_idx] = true;
+            events_cache_dirty = true;
         }
     }
     char aid[40];

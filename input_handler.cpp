@@ -305,6 +305,7 @@ void checkAlarms() {
         if (now - events[i].alarm_time[fireSlot] > 3600) {
             char aid[40]; alarmIdOf(events[i], fireSlot, aid, sizeof(aid));
             events[i].triggered[fireSlot] = true;
+            events_cache_dirty = true;
             logLine("skip stale alarm %s late=%lds", aid, (long)(now - events[i].alarm_time[fireSlot]));
             ackAlarm(aid, "stale");
             continue;
@@ -336,6 +337,7 @@ void checkAlarms() {
             sendHeartbeat(true);      // ホストへ即「鳴動中」を報告
         } else {
             events[i].triggered[fireSlot] = true;
+            events_cache_dirty = true;
             playing_event = -1; playing_alarm_idx = -1; playing_alarm_id[0] = '\0';
             ackAlarm(aid, "failed");
         }

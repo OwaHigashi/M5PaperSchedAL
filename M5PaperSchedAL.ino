@@ -10,6 +10,8 @@
  *   - テーブル版(rev)が変わったら GET /api/v1/events で全件再取得 (NDJSON)
  *   - 鳴動完了は POST /api/v1/alarm/ack。届かなければ LittleFS に保持して再送
  *   - ホスト不達でも手元のテーブルで時刻通りに鳴動する
+ *   - v102: 予定テーブルを LittleFS (/events.cache) に、時刻を BM8563 RTC に永続化。
+ *     ホスト不達のまま再起動(2時間ルール含む)しても表示・鳴動を自律継続する
  *
  * SDカードは使わない。フォント/設定/MIDI は内蔵フラッシュ(LittleFS, data/ → uploadfs)。
  *
@@ -84,6 +86,10 @@ void setup() {
     loadPendingAcks();
     setenv("TZ", config.tz, 1); tzset();
 
+    // BM8563 RTCから時刻を仮復元 (ホスト同期が取れ次第、毎回上書き補正される)。
+    // これによりホスト不達のまま再起動しても時刻を失わず鳴動を継続できる。
+    rtcLoadTime();
+
     // MIDI UART
     Serial2.begin(config.midi_baud, SERIAL_8N1, -1, port_tx_pins[config.port_select]);
 
@@ -130,6 +136,10 @@ void setup() {
         bootMsg("WiFi Failed — P → 設定", 360);
         delay(2000);
     }
+
+    // ホストから予定を取得できなかった場合はローカルキャッシュから復元
+    // (時刻はRTC復元済みなので、キャッシュの予定でそのまま鳴動できる)
+    if (event_count == 0) loadEventsCache();
 
     {
         float tC = -99.0f;
@@ -225,6 +235,9 @@ void loop() {
             }
         }
         if (host_online) retryPendingAcks();
+
+        // 鳴動状態(triggered)が変わったらキャッシュへ反映 (再生中は避ける)
+        if (events_cache_dirty && !midi_playing) saveEventsCache();
 
         // ホスト不達が続く → WiFi張り直し → 最終的に再起動
         if (host_lost_since_ms != 0) {
