@@ -6,22 +6,40 @@
 //   ポーリングだとハートビートHTTPやEPD描画のブロック中(数百ms)の押下を
 //   取りこぼす → GPIO割り込みで押下をカウントし、ループ復帰後に必ず処理する
 //==============================================================================
+// 単純なFALLINGカウントだと、EPD駆動ノイズや ESP32 errata (ADC1使用中に
+// GPIO36/39へ偽割り込み。バッテリー電圧=GPIO35/ADC1 を5秒毎に読む) の偽エッジまで
+// 押下扱いになり連打状態になる。CHANGE割り込み+実レベル確認の状態機械にする:
+//   ・ピンが実際にLOWのときだけ「押下」1回 (偽エッジはレベルHIGHのままなので弾く)
+//   ・HIGH(離した)を確認するまで次の押下を受け付けない
 static volatile uint8_t sw_press_cnt[3] = {0, 0, 0};       // L, R, P
+static volatile bool sw_down[3] = {false, false, false};
 static volatile uint32_t sw_last_edge_ms[3] = {0, 0, 0};
-static const uint32_t SW_DEBOUNCE_MS = 60;
+static const uint32_t SW_DEBOUNCE_MS = 50;
+static const uint8_t sw_pins[3] = {SW_L_PIN, SW_R_PIN, SW_P_PIN};
 
 static void IRAM_ATTR swISR(void* arg) {
     int idx = (int)(intptr_t)arg;
-    uint32_t now = millis();
+    // GPIO37-39: レジスタ直読み (ISR内でflash上の関数を呼ばないため)
+    bool level = (GPIO.in1.val >> (sw_pins[idx] - 32)) & 1;
+    uint32_t now = xTaskGetTickCountFromISR() * portTICK_PERIOD_MS;
+    if (level) {                                               // HIGH = 離した
+        if (sw_down[idx] && now - sw_last_edge_ms[idx] >= SW_DEBOUNCE_MS) {
+            sw_down[idx] = false;
+            sw_last_edge_ms[idx] = now;
+        }
+        return;
+    }
+    if (sw_down[idx]) return;                                  // 押下中の再エッジ(ノイズ)は無視
     if (now - sw_last_edge_ms[idx] < SW_DEBOUNCE_MS) return;   // チャタリング除去
     sw_last_edge_ms[idx] = now;
-    if (sw_press_cnt[idx] < 8) sw_press_cnt[idx]++;            // 溜めすぎ防止
+    sw_down[idx] = true;
+    if (sw_press_cnt[idx] < 4) sw_press_cnt[idx]++;            // 溜めすぎ防止
 }
 
 void initSwitchISR() {
-    attachInterruptArg(SW_L_PIN, swISR, (void*)0, FALLING);
-    attachInterruptArg(SW_R_PIN, swISR, (void*)1, FALLING);
-    attachInterruptArg(SW_P_PIN, swISR, (void*)2, FALLING);
+    attachInterruptArg(SW_L_PIN, swISR, (void*)0, CHANGE);
+    attachInterruptArg(SW_R_PIN, swISR, (void*)1, CHANGE);
+    attachInterruptArg(SW_P_PIN, swISR, (void*)2, CHANGE);
 }
 
 void checkSwitches() {
